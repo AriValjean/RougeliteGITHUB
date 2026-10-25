@@ -157,24 +157,53 @@ bool UWeaponManagerComponent::EquipWeaponForClass(ECharacterClass CharacterClass
 		return EquipWeapon(LastWeapon);
 	}
 
-	// Fallback: the class's starter weapon. DT_ClassDefinitions row names match the enum names (Rogue, Ranger...).
+	// Fallback: the class's starter weapon.
+	const FName Starter = GetStarterWeaponForClass(CharacterClass);
+	if (Starter.IsNone())
+	{
+		return false; // GetStarterWeaponForClass logged why
+	}
+	return EquipWeapon(Starter);
+}
+
+FName UWeaponManagerComponent::GetStarterWeaponForClass(ECharacterClass CharacterClass) const
+{
 	if (!ClassDefinitionTable)
 	{
-		UE_LOG(LogWeaponManager, Error, TEXT("EquipWeaponForClass: ClassDefinitionTable is not set on %s."), *GetNameSafe(this));
-		return false;
+		UE_LOG(LogWeaponManager, Error, TEXT("ClassDefinitionTable is not set on %s."), *GetNameSafe(this));
+		return NAME_None;
 	}
 
+	// DT_ClassDefinitions row names match the enum names (Rogue, Ranger...).
 	const FName ClassRow(*StaticEnum<ECharacterClass>()->GetNameStringByValue(static_cast<int64>(CharacterClass)));
 
-	static const FString Context(TEXT("UWeaponManagerComponent::EquipWeaponForClass"));
-	const FClassDefinition* ClassDef = ClassDefinitionTable->FindRow<FClassDefinition>(ClassRow, Context);
+	static const FString Context(TEXT("UWeaponManagerComponent::GetStarterWeaponForClass"));
+	const FClassDefinition* ClassDef = ClassDefinitionTable->FindRow<FClassDefinition>(ClassRow, Context, false);
 	if (!ClassDef)
 	{
-		UE_LOG(LogWeaponManager, Warning, TEXT("EquipWeaponForClass: no class row '%s'."), *ClassRow.ToString());
-		return false;
+		UE_LOG(LogWeaponManager, Warning, TEXT("No class row '%s' in %s."), *ClassRow.ToString(), *GetNameSafe(ClassDefinitionTable));
+		return NAME_None;
+	}
+	return ClassDef->StarterWeaponRow;
+}
+
+FName UWeaponManagerComponent::GetCompareWeaponRow(FName SelectedRow) const
+{
+	FWeaponData Selected;
+	if (!GetWeaponData(SelectedRow, Selected))
+	{
+		return NAME_None;
 	}
 
-	return EquipWeapon(ClassDef->StarterWeaponRow);
+	// Last weapon used with the selected weapon's class; never used yet -> that class's starter weapon.
+	FName Compare = GetLastWeaponForClass(Selected.OwnerClass);
+	if (Compare.IsNone())
+	{
+		Compare = GetStarterWeaponForClass(Selected.OwnerClass);
+	}
+
+	// Comparing a weapon with itself is pointless: the card shows no differences.
+	return (Compare == SelectedRow) ? NAME_None : Compare;
 }
 
 // ----------------------------------------------------------------------
@@ -231,6 +260,45 @@ void UWeaponManagerComponent::LoadSaveData(const FWeaponManagerSaveData& SaveDat
 // ----------------------------------------------------------------------
 // Getters
 // ----------------------------------------------------------------------
+
+TArray<FName> UWeaponManagerComponent::GetOwnedWeaponsSorted() const
+{
+	TArray<FName> Sorted = OwnedWeapons;
+	if (!WeaponDataTable)
+	{
+		return Sorted;
+	}
+
+	static const FString Context(TEXT("UWeaponManagerComponent::GetOwnedWeaponsSorted"));
+
+	// Stable sort keeps the owned order for weapons that compare equal (e.g. rows missing from the table).
+	Sorted.StableSort([this](const FName& A, const FName& B)
+	{
+		const FWeaponData* DataA = WeaponDataTable->FindRow<FWeaponData>(A, Context, false);
+		const FWeaponData* DataB = WeaponDataTable->FindRow<FWeaponData>(B, Context, false);
+		if (!DataA || !DataB)
+		{
+			return DataA != nullptr; // valid rows before missing ones
+		}
+
+		// 1. Class, in enum order (Rogue, Ranger, Wizard, Swordsman).
+		if (DataA->OwnerClass != DataB->OwnerClass)
+		{
+			return static_cast<uint8>(DataA->OwnerClass) < static_cast<uint8>(DataB->OwnerClass);
+		}
+
+		// 2. Rarity, highest first.
+		if (DataA->Rarity != DataB->Rarity)
+		{
+			return static_cast<uint8>(DataA->Rarity) > static_cast<uint8>(DataB->Rarity);
+		}
+
+		// 3. Display name, alphabetical.
+		return DataA->DisplayName.CompareTo(DataB->DisplayName) < 0;
+	});
+
+	return Sorted;
+}
 
 FName UWeaponManagerComponent::GetLastWeaponForClass(ECharacterClass CharacterClass) const
 {

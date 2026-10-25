@@ -140,12 +140,31 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weapons")
 	const TArray<FName>& GetOwnedWeapons() const { return OwnedWeapons; }
 
+	/**
+	 * Owned weapons in display order: by class (Rogue, Ranger, Wizard, Swordsman),
+	 * then rarity high to low (Legendary first), then display name. Use this for UI lists.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Weapons")
+	TArray<FName> GetOwnedWeaponsSorted() const;
+
 	UFUNCTION(BlueprintPure, Category = "Weapons")
 	ECharacterClass GetCurrentClass() const { return CurrentClass; }
 
 	/** Returns the remembered weapon row for a class, or None if that class hasn't equipped anything yet. */
 	UFUNCTION(BlueprintPure, Category = "Weapons")
 	FName GetLastWeaponForClass(ECharacterClass CharacterClass) const;
+
+	/** The class's Starter Weapon Row from DT_ClassDefinitions, or None if missing. */
+	UFUNCTION(BlueprintPure, Category = "Weapons")
+	FName GetStarterWeaponForClass(ECharacterClass CharacterClass) const;
+
+	/**
+	 * Which weapon the weapon card should compare SelectedRow against:
+	 * the last-used weapon of the selected weapon's class (falls back to that class's starter weapon).
+	 * Returns None when there is nothing useful to compare (the selected weapon IS that weapon, or no data).
+	 */
+	UFUNCTION(BlueprintPure, Category = "Weapons")
+	FName GetCompareWeaponRow(FName SelectedRow) const;
 
 	/** Looks up a row in DT_WeaponData. Handy for widgets (icon, rarity, owner class). */
 	UFUNCTION(BlueprintCallable, Category = "Weapons")

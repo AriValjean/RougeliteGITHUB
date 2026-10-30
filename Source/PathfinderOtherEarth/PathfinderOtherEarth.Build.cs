@@ -8,7 +8,7 @@ public class PathfinderOtherEarth : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "Niagara" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "Niagara", "DeveloperSettings" });
 		PublicIncludePaths.Add(ModuleDirectory);
 		
 		PrivateDependencyModuleNames.AddRange(new string[] { "GameplayAbilities" ,"GameplayTasks","GameplayTags" });

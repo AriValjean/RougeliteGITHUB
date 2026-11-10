@@ -86,8 +86,8 @@ FName UPathfinderLootStatics::RollAccessory(EItemRarity Rarity, const UDataTable
 		AccessoryTable->ForeachRow<FAccessoryData>(TEXT("RollAccessory"),
 			[&](const FName& RowName, const FAccessoryData& Row)
 			{
-				if (static_cast<int32>(Row.Rarity) == Tier && Row.DropWeight > 0.f)
-				{
+				// Chests only roll accessories marked In Chest Pool (shop-only items are skipped).
+				if (Row.bInChestPool && static_cast<int32>(Row.Rarity) == Tier && Row.DropWeight > 0.f)				{
 					Candidates.Add(RowName);
 					Weights.Add(Row.DropWeight);
 				}

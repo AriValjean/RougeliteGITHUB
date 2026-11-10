@@ -4,6 +4,7 @@
 // Data types for the accessory system.
 //   FStatModifier  -> replaces Blueprint struct S_StatModifier
 //   FAccessoryData -> replaces Blueprint struct S_Accessory (row struct for DT_AccessoriesCPP)
+//   EShopCategory  -> which shop card an accessory can appear on
 
 #pragma once
 
@@ -15,6 +16,17 @@
 #include "AccessoryTypes.generated.h"
 
 class UAccessoryEffect;
+
+/** Which shop card an accessory belongs to. New values go at the END so existing rows keep theirs. */
+UENUM(BlueprintType)
+enum class EShopCategory : uint8
+{
+	None	UMETA(DisplayName = "None"),		// not sold in the shop (or not categorized yet)
+	Ranged	UMETA(DisplayName = "Ranged"),		// card 1: triggers on the ranged attack slot
+	Melee	UMETA(DisplayName = "Melee"),		// card 2: triggers on the melee attack slot
+	Stat	UMETA(DisplayName = "Stat"),		// card 3: pure stat boost
+	Ability	UMETA(DisplayName = "Ability")		// card 4 (stage 3+): basic-ability modification
+};
 
 /**
  * One stat change granted by an accessory.
@@ -71,6 +83,18 @@ struct PATHFINDEROTHEREARTH_API FAccessoryData : public FTableRowBase
 	/** Weight used by the loot roll when picking inside a rarity tier. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Loot", meta = (ClampMin = "0.0"))
 	float DropWeight = 1.f;
+
+	/** Can this accessory come out of chests? */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Loot")
+	bool bInChestPool = true;
+
+	/** Can this accessory be sold by the merchant? Also needs a Shop Category. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Loot")
+	bool bInShopPool = false;
+
+	/** Which shop card it appears on (Ranged / Melee / Stat / Ability). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Loot")
+	EShopCategory ShopCategory = EShopCategory::None;
 
 	/** Optional behaviour object. Leave empty for pure-stat accessories. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Effect")

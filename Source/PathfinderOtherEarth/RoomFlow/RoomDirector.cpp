@@ -3,6 +3,7 @@
 #include "RoomFlow/RoomDirector.h"
 #include "RoomFlow/RoomFlowSubsystem.h"
 #include "Combat/HealthComponent.h"
+#include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -77,6 +78,7 @@ void ARoomDirector::RegisterEnemy(AActor* Enemy)
 	}
 
 	Enemies.AddUnique(Health);
+	bHadEnemies = true;
 	Health->OnDeath.AddUniqueDynamic(this, &ARoomDirector::HandleEnemyDeath);
 }
 
@@ -140,11 +142,39 @@ void ARoomDirector::ClearRoom()
 	UE_LOG(LogRoomDirector, Log, TEXT("%s: room cleared."), *GetName());
 	OnRoomCleared.Broadcast();
 
+	GrantClearRewards();
+
 	if (UGameInstance* GI = GetGameInstance())
 	{
 		if (URoomFlowSubsystem* RoomFlow = GI->GetSubsystem<URoomFlowSubsystem>())
 		{
 			RoomFlow->NotifyRoomCleared();
+		}
+	}
+}
+
+void ARoomDirector::GrantClearRewards()
+{
+	// Start, Shop and NPC rooms never had enemies, so they give nothing.
+	if (!bHadEnemies)
+	{
+		return;
+	}
+
+	const bool bGiveMemoria = bGuaranteeMemoria || FMath::FRand() < MemoriaChance;
+	if (!bGiveMemoria)
+	{
+		UE_LOG(LogRoomDirector, Log, TEXT("%s: no Memoria this clear (%.0f%% chance)."), *GetName(), MemoriaChance * 100.f);
+		return;
+	}
+
+	const int32 Amount = FMath::RandRange(FMath::Min(MemoriaMin, MemoriaMax), FMath::Max(MemoriaMin, MemoriaMax));
+
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UPathfinderMetaSubsystem* Meta = GI->GetSubsystem<UPathfinderMetaSubsystem>())
+		{
+			Meta->AddCurrency(MemoriaCurrencyId, Amount);
 		}
 	}
 }

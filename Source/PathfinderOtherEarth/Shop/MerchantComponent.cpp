@@ -6,6 +6,7 @@
 #include "Accessory/AccessoryManagerComponent.h"
 #include "Currency/CurrencyManagerComponent.h"
 #include "Currency/PathfinderEconomySettings.h"
+#include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/DataTable.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -99,14 +100,39 @@ int32 UMerchantComponent::GetPrice(EItemRarity Rarity) const
 	return FMath::RoundToInt((Base ? *Base : 0) * GetCostScale());
 }
 
+int32 UMerchantComponent::GetFreeRerollsPerShop() const
+{
+	const UGameInstance* GI = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const UPathfinderMetaSubsystem* Meta = GI ? GI->GetSubsystem<UPathfinderMetaSubsystem>() : nullptr;
+	return Meta ? FMath::Max(0, FMath::RoundToInt(Meta->GetEffectTotal(EMetaUpgradeEffect::FreeShopRerolls))) : 0;
+}
+
+int32 UMerchantComponent::GetFreeRerollsRemaining() const
+{
+	return FMath::Max(0, GetFreeRerollsPerShop() - RerollsUsed);
+}
+
 int32 UMerchantComponent::GetRerollCost() const
 {
-	const float Cost = RerollBaseCost * GetCostScale() * FMath::Pow(RerollCostMultiplier, static_cast<float>(RerollsUsed));
+	// Free rerolls from the Enchantress are used first.
+	const int32 FreePerShop = GetFreeRerollsPerShop();
+	if (RerollsUsed < FreePerShop)
+	{
+		return 0;
+	}
+
+	// Escalation only counts PAID rerolls, so the first paid reroll is the normal base cost.
+	const int32 PaidRerollsUsed = RerollsUsed - FreePerShop;
+	const float Cost = RerollBaseCost * GetCostScale() * FMath::Pow(RerollCostMultiplier, static_cast<float>(PaidRerollsUsed));
 	return FMath::RoundToInt(Cost);
 }
 
 bool UMerchantComponent::CanAfford(int32 Cost, const AActor* Buyer)
 {
+	if (Cost <= 0)
+	{
+		return true;
+	}
 	const UCurrencyManagerComponent* Wallet = UCurrencyManagerComponent::FindCurrencyManager(Buyer);
 	return Wallet && Wallet->HasEnoughGold(Cost);
 }
@@ -345,7 +371,7 @@ bool UMerchantComponent::TryReroll(int32 CardIndex, AActor* Buyer)
 	}
 
 	const int32 Cost = GetRerollCost();
-	if (!Wallet->HasEnoughGold(Cost))
+	if (Cost > 0 && !Wallet->HasEnoughGold(Cost))
 	{
 		return false;
 	}
@@ -369,12 +395,14 @@ bool UMerchantComponent::TryReroll(int32 CardIndex, AActor* Buyer)
 		return false;
 	}
 
-	if (!Wallet->TrySpendGold(Cost))
+	// Free rerolls (Cost 0) skip the wallet entirely.
+	if (Cost > 0 && !Wallet->TrySpendGold(Cost))
 	{
 		return false;
 	}
 
-	UE_LOG(LogShop, Log, TEXT("Rerolled '%s' -> '%s' for %d."), *Card.AccessoryId.ToString(), *NewId.ToString(), Cost);
+	UE_LOG(LogShop, Log, TEXT("Rerolled '%s' -> '%s' for %d%s."), *Card.AccessoryId.ToString(), *NewId.ToString(), Cost,
+		Cost == 0 ? TEXT(" (free)") : TEXT(""));
 
 	Card.AccessoryId = NewId;
 	Card.Rarity = NewRarity;

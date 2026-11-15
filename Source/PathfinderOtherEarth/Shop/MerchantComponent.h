@@ -1,16 +1,3 @@
-// MerchantComponent.h
-// Location: Source/PathfinderOtherEarth/Shop/MerchantComponent.h
-//
-// The shop's stock and rules. Add to the merchant NPC (BP_MerchantNPC).
-//
-// Cards (one accessory each, no duplicates across cards):
-//   Card 1 Ranged, Card 2 Melee, Card 3 Stat, Card 4 Ability (from Ability Card From Stage, if any Ability items exist)
-// Rarity: rolled per card from DT_RarityWeightCPP rows "Shop_Stage1", "Shop_Stage2"...
-//   (overall stage; uses the highest row at or below the current stage). If the card's pool has nothing at that
-//   rarity, it steps down toward Common.
-// Price: Base Price for the rarity x stage cost scale (same Economy settings as chests).
-// Reroll: each card once per shop. Cost = Reroll Base Cost x stage cost scale x Multiplier ^ rerolls used in this shop.
-// Stock is rolled the first time the shop is opened, from the run's seeded random stream.
 
 #pragma once
 
@@ -66,9 +53,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Shop")
 	const TArray<FShopCard>& GetCards();
 
-	/** Cost of the next reroll (shared by all cards; goes up after each reroll in this shop). */
+	/**
+	 * Cost of the next reroll (shared by all cards). 0 while the player still has free rerolls
+	 * from the Enchantress; after that it starts at the base cost and goes up with each paid reroll.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Shop")
 	int32 GetRerollCost() const;
+
+	/** Free rerolls left in this shop (Enchantress "Free Shop Rerolls" upgrade minus rerolls already used here). */
+	UFUNCTION(BlueprintPure, Category = "Shop")
+	int32 GetFreeRerollsRemaining() const;
 
 	/** True if the card has an item, isn't sold and hasn't been rerolled yet. (Doesn't check gold.) */
 	UFUNCTION(BlueprintPure, Category = "Shop")
@@ -109,11 +103,11 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Shop|Prices")
 	TMap<EItemRarity, int32> BasePrices;
 
-	/** First reroll in a shop at stage 1, before stage scaling. */
+	/** First paid reroll in a shop at stage 1, before stage scaling. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Shop|Prices", meta = (ClampMin = "0"))
 	int32 RerollBaseCost = 50;
 
-	/** Each reroll in the same shop multiplies the next reroll's cost by this. */
+	/** Each paid reroll in the same shop multiplies the next reroll's cost by this. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Shop|Prices", meta = (ClampMin = "1.0"))
 	float RerollCostMultiplier = 1.5f;
 
@@ -137,11 +131,15 @@ private:
 	float GetCostScale() const;
 	int32 GetPrice(EItemRarity Rarity) const;
 
+	/** Total free rerolls per shop from the Enchantress upgrade (0 if not bought). */
+	int32 GetFreeRerollsPerShop() const;
+
 	FRandomStream& Rng();
 
 	UPROPERTY(VisibleInstanceOnly, Category = "Shop|Runtime")
 	TArray<FShopCard> Cards;
 
+	/** All rerolls used in this shop, free and paid. */
 	UPROPERTY(VisibleInstanceOnly, Category = "Shop|Runtime")
 	int32 RerollsUsed = 0;
 

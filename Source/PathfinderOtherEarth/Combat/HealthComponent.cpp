@@ -5,6 +5,10 @@
 
 #include "GameFramework/Actor.h"
 #include "Stats/StatsManagerComponent.h"
+#include "Meta/PathfinderMetaSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHealth, Log, All);
 
@@ -49,6 +53,11 @@ void UHealthComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (StatsComponent)
 	{
 		StatsComponent->OnStatsChanged.RemoveDynamic(this, &UHealthComponent::HandleStatsChanged);
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(DefianceInvulnerabilityTimer);
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -143,7 +152,7 @@ bool UHealthComponent::TakeDamage(const FDamageInfo& DamageInfo, float& FinalDam
 {
 	FinalDamage = 0.f;
 
-	if (bIsDead || bIsInvincible || DamageInfo.Amount <= 0.f)
+	if (bIsDead || IsInvincible() || DamageInfo.Amount <= 0.f)
 	{
 		return false;
 	}
@@ -156,6 +165,14 @@ bool UHealthComponent::TakeDamage(const FDamageInfo& DamageInfo, float& FinalDam
 	CurrentHealth = FMath::Max(CurrentHealth - FinalDamage, 0.f);
 
 	OnDamaged.Broadcast(DamageInfo, FinalDamage);
+
+	// Lethal hit: try Death Defiance before dying.
+	if (CurrentHealth <= 0.f && TryDeathDefiance())
+	{
+		BroadcastHealthChanged();
+		return true;
+	}
+
 	BroadcastHealthChanged();
 
 	if (CurrentHealth <= 0.f)
@@ -165,6 +182,44 @@ bool UHealthComponent::TakeDamage(const FDamageInfo& DamageInfo, float& FinalDam
 	}
 
 	return true;
+}
+
+bool UHealthComponent::TryDeathDefiance()
+{
+	if (!bCanUseDeathDefiance)
+	{
+		return false;
+	}
+
+	const UWorld* World = GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	UPathfinderMetaSubsystem* Meta = GI ? GI->GetSubsystem<UPathfinderMetaSubsystem>() : nullptr;
+	if (!Meta || !Meta->TryConsumeDeathDefiance())
+	{
+		return false;
+	}
+
+	// Revive at the configured fraction of max health (Project Settings > Game > Meta Progression).
+	CurrentHealth = FMath::Max(MaxHealth * Meta->GetDeathDefianceHealFraction(), FMath::Min(1.f, MaxHealth));
+
+	// Short invulnerability so the same attack (or a follow-up) can't kill straight away.
+	const float InvulnTime = Meta->GetDeathDefianceInvulnerabilityTime();
+	if (InvulnTime > 0.f)
+	{
+		bDefianceInvulnerable = true;
+		GetWorld()->GetTimerManager().SetTimer(DefianceInvulnerabilityTimer, this, &UHealthComponent::EndDefianceInvulnerability, InvulnTime, false);
+	}
+
+	UE_LOG(LogHealth, Log, TEXT("%s: Death Defiance used, revived at %.0f health (%d charges left)."),
+		*GetNameSafe(GetOwner()), CurrentHealth, Meta->GetDeathDefianceRemaining());
+
+	OnDeathDefied.Broadcast(Meta->GetDeathDefianceRemaining());
+	return true;
+}
+
+void UHealthComponent::EndDefianceInvulnerability()
+{
+	bDefianceInvulnerable = false;
 }
 
 float UHealthComponent::Heal(float Amount)

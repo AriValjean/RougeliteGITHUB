@@ -2,10 +2,50 @@
 // Drop into: Source/PathfinderOtherEarth/Stats/StatsManagerComponent.cpp
 
 #include "StatsManagerComponent.h"
+#include "Meta/PathfinderMetaSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 
 UStatsManagerComponent::UStatsManagerComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+}
+
+void UStatsManagerComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// Listen for Enchantress purchases/refunds so movement speed, health, etc. update straight away.
+	if (bApplyMetaBonuses)
+	{
+		if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem())
+		{
+			Meta->OnUpgradeChanged.AddUniqueDynamic(this, &UStatsManagerComponent::HandleMetaUpgradeChanged);
+		}
+	}
+}
+
+void UStatsManagerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// The subsystem outlives this component, so stop listening.
+	if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem())
+	{
+		Meta->OnUpgradeChanged.RemoveDynamic(this, &UStatsManagerComponent::HandleMetaUpgradeChanged);
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
+UPathfinderMetaSubsystem* UStatsManagerComponent::GetMetaSubsystem() const
+{
+	const UWorld* World = GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	return GI ? GI->GetSubsystem<UPathfinderMetaSubsystem>() : nullptr;
+}
+
+void UStatsManagerComponent::HandleMetaUpgradeChanged(FName UpgradeId, int32 NewRank)
+{
+	OnStatsChanged.Broadcast();
 }
 
 void UStatsManagerComponent::InitializeStats()
@@ -51,13 +91,36 @@ void UStatsManagerComponent::AddModifier(ECharacterStatType StatType, EModifierM
 	OnStatsChanged.Broadcast();
 }
 
-float UStatsManagerComponent::GetTotal(ECharacterStatType Stat) const
+float UStatsManagerComponent::GetMetaBonus(ECharacterStatType Stat, EModifierMode Mode) const
+{
+	if (!bApplyMetaBonuses)
+	{
+		return 0.f;
+	}
+
+	const UPathfinderMetaSubsystem* Meta = GetMetaSubsystem();
+	return Meta ? Meta->GetStatBonus(Stat, Mode) : 0.f;
+}
+
+float UStatsManagerComponent::GetTotalWithoutMeta(ECharacterStatType Stat) const
 {
 	const float Base = GetBaseStat(Stat);
 	const float* Flat = FlatBonuses.Find(Stat);
 	const float* Percent = PercentBonuses.Find(Stat);
 
 	return (Base + (Flat ? *Flat : 0.f)) * (1.f + (Percent ? *Percent : 0.f));
+}
+
+float UStatsManagerComponent::GetTotal(ECharacterStatType Stat) const
+{
+	const float Base = GetBaseStat(Stat);
+	const float* Flat = FlatBonuses.Find(Stat);
+	const float* Percent = PercentBonuses.Find(Stat);
+
+	const float TotalFlat = (Flat ? *Flat : 0.f) + GetMetaBonus(Stat, EModifierMode::Flat);
+	const float TotalPercent = (Percent ? *Percent : 0.f) + GetMetaBonus(Stat, EModifierMode::Percent);
+
+	return (Base + TotalFlat) * (1.f + TotalPercent);
 }
 
 void UStatsManagerComponent::GetStatTotal(ECharacterStatType Stat, float& Total) const
@@ -70,8 +133,13 @@ FStatBreakdown UStatsManagerComponent::GetStatBreakdown(ECharacterStatType StatT
 	FStatBreakdown Breakdown;
 	Breakdown.Base = GetBaseStat(StatType);
 	Breakdown.Total = GetTotal(StatType);
-	Breakdown.AccessoryBonus = Breakdown.Total - Breakdown.Base;
-	Breakdown.MetaBonus = 0.f;
+
+	// Accessory = what this run's modifiers add; Meta = what the Enchantress adds on top.
+	// Base + Accessory + Meta always equals Total.
+	const float WithoutMeta = GetTotalWithoutMeta(StatType);
+	Breakdown.AccessoryBonus = WithoutMeta - Breakdown.Base;
+	Breakdown.MetaBonus = Breakdown.Total - WithoutMeta;
+
 	Breakdown.bIsPercentDisplay = IsPercentStat(StatType);
 	return Breakdown;
 }

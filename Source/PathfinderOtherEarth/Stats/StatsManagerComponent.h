@@ -3,8 +3,11 @@
 // this class (same as BPC_WeaponManager -> UWeaponManagerComponent).
 //
 // Players and enemies use the SAME class: the player's ClassStatsRow points at
-// DT_ClassStats, an enemy's points at DT_EnemyStatsV2. BPC_EnemyStatsManager stays a
-// Blueprint child of BPC_StatsManager; its LoadBaseRow override is no longer needed.
+// DT_ClassStatsCPP, an enemy's points at DT_EnemyStatsCPP.
+//
+// Total = (Base + Accessory Flat + Meta Flat) x (1 + Accessory Percent + Meta Percent)
+// Meta bonuses come from the Enchantress upgrades (UPathfinderMetaSubsystem) and only apply
+// when Apply Meta Bonuses is ticked (player only — enemies leave it off).
 //
 // Drop into: Source/PathfinderOtherEarth/Stats/StatsManagerComponent.h
 
@@ -26,11 +29,15 @@ public:
 	UStatsManagerComponent();
 
 	/**
-	 * Which DataTable + row to load base stats from (DT_ClassStats for players,
-	 * DT_EnemyStatsV2 for enemies). Same name as the old Blueprint variable on purpose.
+	 * Which DataTable + row to load base stats from (DT_ClassStatsCPP for players,
+	 * DT_EnemyStatsCPP for enemies). Same name as the old Blueprint variable on purpose.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats")
 	FDataTableRowHandle ClassStatsRow;
+
+	/** Tick on the PLAYER's stats component only. Adds Enchantress (meta) upgrades into the totals and the Meta bucket. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Stats")
+	bool bApplyMetaBonuses = false;
 
 	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Stats")
 	FOnStatsChanged OnStatsChanged;
@@ -47,7 +54,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Stats")
 	void AddModifier(ECharacterStatType StatType, EModifierMode Mode, float Amount);
 
-	/** (Base + Flat) x (1 + Percent). Percent is a fraction, so 0.1 = +10%. */
+	/** (Base + Flat) x (1 + Percent), including meta bonuses when enabled. Percent is a fraction, so 0.1 = +10%. */
 	UFUNCTION(BlueprintPure, Category = "Stats")
 	void GetStatTotal(ECharacterStatType Stat, float& Total) const;
 
@@ -55,7 +62,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Stats")
 	FStatBreakdown GetStatBreakdown(ECharacterStatType StatType) const;
 
-	/** Clears this run's Flat/Percent bonuses. Base stats untouched. */
+	/** Clears this run's Flat/Percent bonuses. Base stats and meta bonuses untouched. */
 	UFUNCTION(BlueprintCallable, Category = "Stats")
 	void ResetRunBonuses();
 
@@ -67,7 +74,16 @@ public:
 	float GetTotal(ECharacterStatType Stat) const;
 
 protected:
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
 	float GetBaseStat(ECharacterStatType StatType) const;
+
+	/** Total without meta bonuses: (Base + Flat) x (1 + Percent). */
+	float GetTotalWithoutMeta(ECharacterStatType Stat) const;
+
+	/** Meta (Enchantress) bonus for one stat + mode, or 0 when Apply Meta Bonuses is off. */
+	float GetMetaBonus(ECharacterStatType Stat, EModifierMode Mode) const;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Stats")
 	TMap<ECharacterStatType, float> BaseStats;
@@ -77,4 +93,11 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Stats")
 	TMap<ECharacterStatType, float> PercentBonuses;
+
+private:
+	/** Meta upgrade bought or refunded -> totals changed. */
+	UFUNCTION()
+	void HandleMetaUpgradeChanged(FName UpgradeId, int32 NewRank);
+
+	class UPathfinderMetaSubsystem* GetMetaSubsystem() const;
 };

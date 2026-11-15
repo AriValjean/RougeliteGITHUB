@@ -1,11 +1,11 @@
 // RoomDirector.h
 // One per room level. Tracks the room's enemies and decides when the room is cleared.
-// When the last enemy dies it fires On Room Cleared and tells the Room Flow Subsystem,
-// which rolls the portal options.
+// When the last enemy dies it fires On Room Cleared, grants clear rewards (Memoria),
+// and tells the Room Flow Subsystem, which rolls the portal options.
 //
 // Enemies already placed in the level are found automatically (by Enemy Class) one tick after BeginPlay.
 // Enemies spawned later (waves) call Register Enemy.
-// A room with no enemies (Start, Shop, NPC) clears right away.
+// A room with no enemies (Start, Shop, NPC) clears right away and gives no rewards.
 
 #pragma once
 
@@ -52,6 +52,27 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room", meta = (ClampMin = "0.0"))
 	float ClearDelay = 1.0f;
 
+	// ---------- Clear rewards ----------
+
+	/** Tick on boss / elite rooms: Memoria is always given when the room is cleared. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room|Rewards")
+	bool bGuaranteeMemoria = false;
+
+	/** Chance (0-1) that a normal combat room gives Memoria when cleared. Rooms with no enemies never give it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room|Rewards", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "!bGuaranteeMemoria"))
+	float MemoriaChance = 0.15f;
+
+	/** Memoria given is a random whole number between Min and Max (inclusive). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room|Rewards", meta = (ClampMin = "1"))
+	int32 MemoriaMin = 5;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room|Rewards", meta = (ClampMin = "1"))
+	int32 MemoriaMax = 10;
+
+	/** Row name in DT_CurrenciesCPP. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room|Rewards")
+	FName MemoriaCurrencyId = TEXT("Memoria");
+
 private:
 	UFUNCTION()
 	void HandleEnemyDeath(AActor* Killer);
@@ -59,6 +80,7 @@ private:
 	void GatherPlacedEnemies();
 	void CheckCleared();
 	void ClearRoom();
+	void GrantClearRewards();
 
 	/** Weak so a destroyed enemy simply counts as gone. */
 	TArray<TWeakObjectPtr<UHealthComponent>> Enemies;
@@ -66,6 +88,9 @@ private:
 	bool bGathered = false;
 	bool bRoomCleared = false;
 	bool bClearPending = false;
+
+	/** True once at least one enemy was registered, so empty rooms (Start, Shop) never give rewards. */
+	bool bHadEnemies = false;
 
 	FTimerHandle ClearTimer;
 };

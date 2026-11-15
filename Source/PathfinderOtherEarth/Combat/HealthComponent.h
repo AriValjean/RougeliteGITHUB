@@ -6,6 +6,10 @@
 // StatsManagerComponent (BPC_StatsManager / BPC_EnemyStatsManager) and refreshed automatically
 // whenever that component fires On Stats Changed.
 //
+// Death Defiance: when Can Use Death Defiance is ticked (player only) and a lethal hit lands,
+// one charge from the Meta subsystem is used instead of dying. Heal amount and the short
+// invulnerability window are set in Project Settings > Game > Meta Progression.
+//
 // Drop into: Source/PathfinderOtherEarth/Combat/HealthComponent.h
 
 #pragma once
@@ -21,6 +25,7 @@ class UStatsManagerComponent;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnHealthChangedSignature, UHealthComponent*, HealthComponent, float, CurrentHealth, float, MaxHealth);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnDamagedSignature, const FDamageInfo&, DamageInfo, float, FinalDamage);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDeathSignature, AActor*, Killer);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDeathDefiedSignature, int32, ChargesRemaining);
 
 UCLASS(Blueprintable, ClassGroup = (Pathfinder), meta = (BlueprintSpawnableComponent))
 class PATHFINDEROTHEREARTH_API UHealthComponent : public UActorComponent
@@ -45,7 +50,8 @@ public:
 	/**
 	 * Applies one hit. Final Damage = Amount x 100 / (Defense + 100).
 	 * Does nothing (returns false) if already dead or invincible.
-	 * Fires On Damaged, On Health Changed, and On Death when health reaches 0.
+	 * Fires On Damaged, On Health Changed, and On Death when health reaches 0
+	 * (or On Death Defied instead, if a Death Defiance charge was used).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Health", meta = (ReturnDisplayName = "Was Damaged"))
 	bool TakeDamage(const FDamageInfo& DamageInfo, float& FinalDamage);
@@ -89,8 +95,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Health")
 	bool IsDead() const { return bIsDead; }
 
+	/** True while manually invincible OR inside the post-revive invulnerability window. */
 	UFUNCTION(BlueprintPure, Category = "Health")
-	bool IsInvincible() const { return bIsInvincible; }
+	bool IsInvincible() const { return bIsInvincible || bDefianceInvulnerable; }
 
 	// ------------------------------------------------------------------
 	// Events
@@ -108,15 +115,28 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Health|Events")
 	FOnDeathSignature OnDeath;
 
+	/** A lethal hit was cancelled by Death Defiance. Hook revive VFX, sound and HUD charge icons here. */
+	UPROPERTY(BlueprintAssignable, Category = "Health|Events")
+	FOnDeathDefiedSignature OnDeathDefied;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	/** Tick on the PLAYER's health component only. Lets lethal hits use a Death Defiance charge instead of killing. */
+	UPROPERTY(EditAnywhere, Category = "Health")
+	bool bCanUseDeathDefiance = false;
 
 private:
 	UFUNCTION()
 	void HandleStatsChanged();
 
 	void BroadcastHealthChanged();
+
+	/** Called when health hits 0. Uses a charge and revives if possible; returns true if death was prevented. */
+	bool TryDeathDefiance();
+
+	void EndDefianceInvulnerability();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UStatsManagerComponent> StatsComponent;
@@ -137,10 +157,16 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Health")
 	bool bIsInvincible = false;
 
+	/** Separate from bIsInvincible so the revive window never clears a manual/debug invincibility. */
+	UPROPERTY(VisibleInstanceOnly, Category = "Health")
+	bool bDefianceInvulnerable = false;
+
 	/** False until the stats component has loaded a real base Max Health. Before that, stat changes are ignored. */
 	UPROPERTY(VisibleInstanceOnly, Category = "Health")
 	bool bHealthInitialized = false;
 
 	/** A Restore Current Health that arrived before the stats loaded. Applied on initialization. -1 = none. */
 	float PendingRestoredHealth = -1.f;
+
+	FTimerHandle DefianceInvulnerabilityTimer;
 };

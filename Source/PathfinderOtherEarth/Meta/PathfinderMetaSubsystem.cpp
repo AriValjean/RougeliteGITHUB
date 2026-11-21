@@ -3,6 +3,11 @@
 #include "Meta/PathfinderMetaSubsystem.h"
 #include "Meta/PathfinderMetaSettings.h"
 #include "Meta/PathfinderMetaSave.h"
+#include "Core/PathfinderRunSubsystem.h"
+#include "Inventory/InventoryManagerComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
+#include "TimerManager.h"
 #include "Engine/DataTable.h"
 #include "Kismet/GameplayStatics.h"
 #include "HAL/IConsoleManager.h"
@@ -15,6 +20,9 @@ DEFINE_LOG_CATEGORY_STATIC(LogMeta, Log, All);
 
 void UPathfinderMetaSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
+	// The Run subsystem holds weapons/inventory between levels; make sure it exists before we load into it.
+	Collection.InitializeDependency<UPathfinderRunSubsystem>();
+
 	Super::Initialize(Collection);
 
 	const UPathfinderMetaSettings* Settings = GetDefault<UPathfinderMetaSettings>();
@@ -57,6 +65,11 @@ void UPathfinderMetaSubsystem::Deinitialize()
 	UnregisterConsoleCommands();
 
 	// Game is closing: save synchronously so the write finishes before shutdown.
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(DeferredSaveTimer);
+	}
+
 	SaveMeta(false);
 	Super::Deinitialize();
 }
@@ -81,6 +94,7 @@ void UPathfinderMetaSubsystem::LoadMeta()
 	}
 
 	Currencies = Save->Currencies;
+	EnemyDefeats = Save->EnemyDefeats;
 
 	// Copy ranks, dropping upgrades that no longer exist and clamping to the table's current max rank.
 	UpgradeRanks.Reset();
@@ -96,7 +110,24 @@ void UPathfinderMetaSubsystem::LoadMeta()
 		}
 	}
 
-	UE_LOG(LogMeta, Log, TEXT("Loaded meta save '%s'."), *Slot);
+	// Weapons, class and crafting materials go into the Run subsystem; the components read them in BeginPlay.
+	if (UPathfinderRunSubsystem* Run = GetRunSubsystem())
+	{
+		Run->WeaponSave = Save->Weapons;
+
+		Run->bHasInventoryData = Save->bHasInventory;
+		Run->InventorySave.Reset();
+		for (const FInventoryEntry& Entry : Save->Inventory)
+		{
+			// Skip items whose definition asset was deleted or renamed since the save.
+			if (Entry.ItemDefinition && Entry.Count > 0)
+			{
+				Run->InventorySave.Add(Entry);
+			}
+		}
+	}
+
+	UE_LOG(LogMeta, Log, TEXT("Loaded meta save '%s' (version %d)."), *Slot, Save->SaveVersion);
 }
 
 void UPathfinderMetaSubsystem::SaveMeta(bool bAsync)
@@ -117,6 +148,14 @@ void UPathfinderMetaSubsystem::SaveMeta(bool bAsync)
 		}
 	}
 	Save->UpgradeRanks = UpgradeRanks;
+	Save->EnemyDefeats = EnemyDefeats;
+
+	if (const UPathfinderRunSubsystem* Run = GetRunSubsystem())
+	{
+		Save->Weapons = Run->WeaponSave;
+		Save->bHasInventory = Run->bHasInventoryData;
+		Save->Inventory = Run->InventorySave;
+	}
 
 	const FString Slot = GetSaveSlotName();
 	if (bAsync)
@@ -127,6 +166,40 @@ void UPathfinderMetaSubsystem::SaveMeta(bool bAsync)
 	{
 		UGameplayStatics::SaveGameToSlot(Save, Slot, 0);
 	}
+}
+
+void UPathfinderMetaSubsystem::RecordEnemyDefeated(FName EnemyId)
+{
+	if (EnemyId.IsNone())
+	{
+		return;
+	}
+	const int32 Count = ++EnemyDefeats.FindOrAdd(EnemyId);
+	UE_LOG(LogMeta, Log, TEXT("Defeated '%s' (%d time(s))."), *EnemyId.ToString(), Count);
+	RequestSave();
+}
+
+void UPathfinderMetaSubsystem::RequestSave()
+{
+	UGameInstance* GI = GetGameInstance();
+	if (!GI)
+	{
+		SaveMeta(true);
+		return;
+	}
+
+	// Batch changes: at most one write per second, however many pickups/equips happen.
+	FTimerManager& Timers = GI->GetTimerManager();
+	if (!Timers.IsTimerActive(DeferredSaveTimer))
+	{
+		Timers.SetTimer(DeferredSaveTimer, FTimerDelegate::CreateUObject(this, &UPathfinderMetaSubsystem::SaveMeta, true), 1.0f, false);
+	}
+}
+
+UPathfinderRunSubsystem* UPathfinderMetaSubsystem::GetRunSubsystem() const
+{
+	const UGameInstance* GI = GetGameInstance();
+	return GI ? GI->GetSubsystem<UPathfinderRunSubsystem>() : nullptr;
 }
 
 // ======================= Lookups =======================
@@ -544,6 +617,19 @@ void UPathfinderMetaSubsystem::ResetAllProgress()
 	// Make every currency widget refresh, even ones whose total didn't change.
 	BroadcastAllCurrencies();
 
+	EnemyDefeats.Reset();
+
+	// Weapons, class and materials back to defaults. Living components reset themselves on On Save Reset.
+	if (UPathfinderRunSubsystem* Run = GetRunSubsystem())
+	{
+		Run->ResetAll();
+	}
+
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(DeferredSaveTimer);
+	}
+
 	const FString Slot = GetSaveSlotName();
 	if (UGameplayStatics::DoesSaveGameExist(Slot, 0))
 	{
@@ -577,6 +663,12 @@ void UPathfinderMetaSubsystem::RegisterConsoleCommands()
 		TEXT("Meta.GiveCurrency"),
 		TEXT("Meta.GiveCurrency <CurrencyId> <Amount> - adds any currency row (e.g. Gold)."),
 		FConsoleCommandWithArgsDelegate::CreateUObject(this, &UPathfinderMetaSubsystem::Cmd_GiveCurrency),
+		ECVF_Cheat));
+
+	ConsoleCommands.Add(CM.RegisterConsoleCommand(
+		TEXT("Meta.GiveMaterial"),
+		TEXT("Meta.GiveMaterial <MaterialRow> <Count> - adds a crafting material (e.g. Mat_Mushrooms 20)."),
+		FConsoleCommandWithArgsDelegate::CreateUObject(this, &UPathfinderMetaSubsystem::Cmd_GiveMaterial),
 		ECVF_Cheat));
 #endif
 }
@@ -613,4 +705,29 @@ void UPathfinderMetaSubsystem::Cmd_GiveCurrency(const TArray<FString>& Args)
 		return;
 	}
 	AddCurrency(FName(*Args[0]), FCString::Atoi(*Args[1]));
+}
+
+void UPathfinderMetaSubsystem::Cmd_GiveMaterial(const TArray<FString>& Args)
+{
+	if (Args.Num() < 1)
+	{
+		UE_LOG(LogMeta, Warning, TEXT("Usage: Meta.GiveMaterial <MaterialRow> <Count>"));
+		return;
+	}
+
+	const UGameInstance* GI = GetGameInstance();
+	const APlayerController* PC = GI ? GI->GetFirstLocalPlayerController() : nullptr;
+	const APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+	UInventoryManagerComponent* Inventory = UInventoryManagerComponent::FindInventoryManager(Pawn);
+	if (!Inventory)
+	{
+		UE_LOG(LogMeta, Warning, TEXT("Meta.GiveMaterial: no player inventory found."));
+		return;
+	}
+
+	const int32 Count = Args.Num() > 1 ? FCString::Atoi(*Args[1]) : 10;
+	if (!Inventory->AddMaterial(FName(*Args[0]), Count))
+	{
+		UE_LOG(LogMeta, Warning, TEXT("Meta.GiveMaterial: '%s' is not a row in the crafting materials table."), *Args[0]);
+	}
 }

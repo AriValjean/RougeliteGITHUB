@@ -7,15 +7,16 @@ public class PathfinderOtherEarth : ModuleRules
 	public PathfinderOtherEarth(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "Niagara", "DeveloperSettings","UMG" });
+
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "Niagara", "DeveloperSettings", "UMG" });
 		PublicIncludePaths.Add(ModuleDirectory);
-		
-		PrivateDependencyModuleNames.AddRange(new string[] { "GameplayAbilities" ,"GameplayTasks","GameplayTags" });
+
+		// AIModule = EQS + AI controllers, NavigationSystem = navmesh queries (spawn points snap onto the navmesh).
+		PrivateDependencyModuleNames.AddRange(new string[] { "GameplayAbilities", "GameplayTasks", "GameplayTags", "AIModule", "NavigationSystem" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
-		
+
 		// Uncomment if you are using online features
 		// PrivateDependencyModuleNames.Add("OnlineSubsystem");
 

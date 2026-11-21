@@ -4,7 +4,8 @@
 // and tells the Room Flow Subsystem, which rolls the portal options.
 //
 // Enemies already placed in the level are found automatically (by Enemy Class) one tick after BeginPlay.
-// Enemies spawned later (waves) call Register Enemy.
+// Combat rooms set to Generated Waves (DT_RoomsCPP) are filled by the Wave Director component,
+// which registers each enemy it spawns. The room can't clear until every wave has spawned and died.
 // A room with no enemies (Start, Shop, NPC) clears right away and gives no rewards.
 
 #pragma once
@@ -14,6 +15,7 @@
 #include "RoomDirector.generated.h"
 
 class UHealthComponent;
+class UWaveDirectorComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnRoomClearedSignature);
 
@@ -37,12 +39,22 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Room")
 	bool IsRoomCleared() const { return bRoomCleared; }
 
+	UFUNCTION(BlueprintPure, Category = "Room")
+	UWaveDirectorComponent* GetWaveDirector() const { return WaveDirector; }
+
+	/** Called by the Wave Director once its last wave has fully spawned, so the room can clear when they die. */
+	void NotifyWavesFinished();
+
 	/** Fired once, when the last enemy dies (after Clear Delay). Portals and rewards listen to this. */
 	UPROPERTY(BlueprintAssignable, Category = "Room|Events")
 	FOnRoomClearedSignature OnRoomCleared;
 
 protected:
 	virtual void BeginPlay() override;
+
+	/** Spawns Generated Waves in Combat rooms. Set its data tables and tuning on BP_RoomDirector. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Room")
+	TObjectPtr<UWaveDirectorComponent> WaveDirector;
 
 	/** Enemies of this class already in the level are registered automatically. Set to BP_EnemyBase. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Room")

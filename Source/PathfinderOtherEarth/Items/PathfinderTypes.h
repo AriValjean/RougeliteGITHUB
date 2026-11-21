@@ -1,7 +1,8 @@
 // PathfinderTypes.h
 // Core gameplay data types shared by C++ and Blueprints.
 // Replaces the Blueprint assets: E_Classes + E_WeaponClass (merged), E_AttackDelivery,
-// S_AttackSlot, S_PassiveRef, S_WeaponData, S_ClassDefinition.
+// S_AttackSlot, S_PassiveRef, S_WeaponData, S_ClassDefinition, E_Subclasses.
+// Also holds the class-kit / skill types (ESubclass, ESkillSlot, ESkillStat, FSkillModifier, FSkillDefinition, FClassKit).
 // DisplayName metadata matches the old Blueprint field names so pins read the same in the editor.
 
 #pragma once
@@ -9,6 +10,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
 #include "ItemDefinition.h" // EItemRarity. If ItemDefinition.h is in a subfolder, change this path (e.g. "Inventory/ItemDefinition.h").
+#include "Stats/PathfinderStatTypes.h" // EModifierMode (skill modifiers)
 #include "PathfinderTypes.generated.h"
 
 class UAnimMontage;
@@ -17,6 +19,7 @@ class UNiagaraSystem;
 class UStaticMesh;
 class UTexture2D;
 class AWeaponBase;
+class USkillBase;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -196,4 +199,124 @@ struct FClassDefinition : public FTableRowBase
 	/** Row name in DT_WeaponData equipped when this class has no last-used weapon. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Class")
 	FName StarterWeaponRow;
+};
+
+// ---------------------------------------------------------------------------
+// Skills / class kit
+// ---------------------------------------------------------------------------
+
+/** Subclass picked at the start of stage 3. Temporary: lasts one run. Replaces the Blueprint enum E_Subclasses. */
+UENUM(BlueprintType)
+enum class ESubclass : uint8
+{
+	None        UMETA(DisplayName = "None"),
+	Daredevil   UMETA(DisplayName = "Daredevil"),
+	Assassin    UMETA(DisplayName = "Assassin"),
+	Crossbowman UMETA(DisplayName = "Crossbowman"),
+	Deadeye     UMETA(DisplayName = "Deadeye"),
+	BattleMage  UMETA(DisplayName = "Battle Mage"),
+	Monk        UMETA(DisplayName = "Monk"),
+	Paladin     UMETA(DisplayName = "Paladin"),
+	DarkKnight  UMETA(DisplayName = "Dark Knight")
+};
+
+/** The three class-owned skill slots. M1 / M2 belong to the weapon, not the kit. */
+UENUM(BlueprintType)
+enum class ESkillSlot : uint8
+{
+	Dash     UMETA(DisplayName = "Dash"),
+	Basic    UMETA(DisplayName = "Basic"),
+	Ultimate UMETA(DisplayName = "Ultimate")
+};
+
+/** A skill value that accessories / shop ability cards can change. New values go at the END. */
+UENUM(BlueprintType)
+enum class ESkillStat : uint8
+{
+	Cooldown UMETA(DisplayName = "Cooldown (s)"),
+	Damage   UMETA(DisplayName = "Damage"),
+	Distance UMETA(DisplayName = "Distance (cm)"),
+	Duration UMETA(DisplayName = "Duration (s)"),
+	Radius   UMETA(DisplayName = "Radius (cm)")
+};
+
+/**
+ * One skill change granted by an accessory (same idea as FStatModifier).
+ * Final value = (Base + all Flat) x (1 + all Percent). Percent is a fraction: 0.2 = +20%.
+ * First copy applies BaseValue; every extra stack adds PerStackValue.
+ * Examples: Dash / Distance / Percent / 0.2  -> +20% dash distance
+ *           Dash / Cooldown / Flat / -0.5    -> dash cooldown 0.5 s shorter
+ */
+USTRUCT(BlueprintType)
+struct FSkillModifier
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Skill Modifier")
+	ESkillSlot Slot = ESkillSlot::Dash;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Skill Modifier")
+	ESkillStat Stat = ESkillStat::Distance;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Skill Modifier")
+	EModifierMode Mode = EModifierMode::Percent;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Skill Modifier")
+	float BaseValue = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Skill Modifier")
+	float PerStackValue = 0.f;
+};
+
+/** One row in DT_SkillsCPP. Row Name = the skill's ID (e.g. Dash_Rogue). */
+USTRUCT(BlueprintType)
+struct FSkillDefinition : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	FText DisplayName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill", meta = (MultiLine = true))
+	FText Description;
+
+	/** Shown in the skill bar slot. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	TSoftObjectPtr<UTexture2D> Icon;
+
+	/** Base seconds. Skill modifiers apply first; then Cooldown Reduction (Basic/Ultimate only, never Dash). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill", meta = (ClampMin = "0.0", Units = "s"))
+	float Cooldown = 3.f;
+
+	/** The Blueprint that runs the skill (child of Skill Base, e.g. a child of Skill_Dash). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	TSubclassOf<USkillBase> SkillClass;
+
+	/** Optional. Played by Play Skill Montage. Placeholder for now. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	TSoftObjectPtr<UAnimMontage> Montage;
+};
+
+/**
+ * One row in DT_ClassKitsCPP. Row Name must match the enum name:
+ *   base classes: Rogue, Ranger, Wizard, Swordsman
+ *   subclasses:   Daredevil, Assassin, Crossbowman, Deadeye, BattleMage, Monk, Paladin, DarkKnight
+ * On a subclass row, leave a slot as None to keep the base class's skill for that slot.
+ */
+USTRUCT(BlueprintType)
+struct FClassKit : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	/** Row name in DT_SkillsCPP. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Kit")
+	FName DashSkill;
+
+	/** Row name in DT_SkillsCPP. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Kit")
+	FName BasicSkill;
+
+	/** Row name in DT_SkillsCPP. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Kit")
+	FName UltimateSkill;
 };

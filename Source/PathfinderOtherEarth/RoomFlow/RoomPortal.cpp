@@ -1,6 +1,7 @@
 // RoomPortal.cpp
 
 #include "RoomFlow/RoomPortal.h"
+#include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/GameInstance.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogRoomPortal, Log, All);
@@ -87,9 +88,32 @@ bool ARoomPortal::UsePortal()
 
 	if (bStartsRun)
 	{
-		return RoomFlow->StartRun(NAME_None, 0);
+		if (!RoomFlow->StartRun(NAME_None, 0))
+		{
+			bPortalActive = true; // Missing table data (see LogRoomFlow): let the player try again.
+			return false;
+		}
+
+		// New run: reset per-run currencies (Gold), clear "earned this run" (Memoria counter), refill Death Defiance.
+		// The level opens next frame, so the new room starts with a clean run state.
+		if (const UGameInstance* GI = GetGameInstance())
+		{
+			if (UPathfinderMetaSubsystem* Meta = GI->GetSubsystem<UPathfinderMetaSubsystem>())
+			{
+				Meta->BeginRun();
+			}
+		}
+
+		UE_LOG(LogRoomPortal, Log, TEXT("%s: new run started."), *GetName());
+		return true;
 	}
-	return RoomFlow->TravelToPortal(PortalOption);
+
+	const bool bTravelled = RoomFlow->TravelToPortal(PortalOption);
+	if (!bTravelled)
+	{
+		bPortalActive = true; // Travel failed: keep the portal usable.
+	}
+	return bTravelled;
 }
 
 FText ARoomPortal::GetPromptText() const
@@ -111,7 +135,14 @@ FText ARoomPortal::GetPromptText() const
 	{
 	case ERoomType::Combat: return NSLOCTEXT("RoomPortal", "Combat", "Combat");
 	case ERoomType::Shop:   return NSLOCTEXT("RoomPortal", "Shop", "Shop");
-	case ERoomType::Boss:   return NSLOCTEXT("RoomPortal", "Boss", "Boss");
+	case ERoomType::Boss:
+		return PortalOption.EncounterName.IsEmpty()
+			? NSLOCTEXT("RoomPortal", "Boss", "Boss")
+			: FText::Format(NSLOCTEXT("RoomPortal", "BossNamed", "Boss: {0}"), PortalOption.EncounterName);
+	case ERoomType::Elite:
+		return PortalOption.EncounterName.IsEmpty()
+			? NSLOCTEXT("RoomPortal", "Elite", "Elite")
+			: FText::Format(NSLOCTEXT("RoomPortal", "EliteNamed", "Elite: {0}"), PortalOption.EncounterName);
 	case ERoomType::NPC:    return NSLOCTEXT("RoomPortal", "Encounter", "Encounter");
 	default:                return NSLOCTEXT("RoomPortal", "Travel", "Travel");
 	}

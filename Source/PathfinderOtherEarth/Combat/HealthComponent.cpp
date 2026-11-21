@@ -5,12 +5,23 @@
 
 #include "GameFramework/Actor.h"
 #include "Stats/StatsManagerComponent.h"
+#include "Skills/SkillComponent.h"
 #include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHealth, Log, All);
+
+namespace
+{
+	/** True while the owner's skill component has State.Invincible (e.g. dash i-frames). */
+	bool IsSkillInvincible(const AActor* Owner)
+	{
+		const USkillComponent* Skills = Owner ? Owner->FindComponentByClass<USkillComponent>() : nullptr;
+		return Skills && Skills->IsInvincible();
+	}
+}
 
 UHealthComponent::UHealthComponent()
 {
@@ -152,7 +163,8 @@ bool UHealthComponent::TakeDamage(const FDamageInfo& DamageInfo, float& FinalDam
 {
 	FinalDamage = 0.f;
 
-	if (bIsDead || IsInvincible() || DamageInfo.Amount <= 0.f)
+	// Skill i-frames (dash) live on the skill component as State.Invincible.
+	if (bIsDead || IsInvincible() || IsSkillInvincible(GetOwner()) || DamageInfo.Amount <= 0.f)
 	{
 		return false;
 	}

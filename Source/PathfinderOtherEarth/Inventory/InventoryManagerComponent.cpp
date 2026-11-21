@@ -1,12 +1,90 @@
 #include "Inventory/InventoryManagerComponent.h"
 #include "Fragments/InventoryFragment_Stackable.h"
+#include "Core/PathfinderRunSubsystem.h"
+#include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/DataTable.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 
 UInventoryManagerComponent::UInventoryManagerComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
+
+// ---------------------------------------------------------------- Lifetime / persistence
+
+void UInventoryManagerComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// Restore materials from the previous level / the save file. New game: keep Class Defaults.
+	if (const UPathfinderRunSubsystem* Run = GetRunSubsystem())
+	{
+		if (Run->bHasInventoryData)
+		{
+			InventoryItems = Run->InventorySave;
+			OnInventoryChanged.Broadcast();
+		}
+	}
+
+	if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem())
+	{
+		Meta->OnSaveReset.AddUniqueDynamic(this, &UInventoryManagerComponent::HandleSaveReset);
+	}
+}
+
+void UInventoryManagerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UPathfinderRunSubsystem* Run = GetRunSubsystem())
+	{
+		Run->InventorySave = InventoryItems;
+		Run->bHasInventoryData = true;
+	}
+
+	if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem())
+	{
+		Meta->OnSaveReset.RemoveDynamic(this, &UInventoryManagerComponent::HandleSaveReset);
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
+void UInventoryManagerComponent::NotifyChanged()
+{
+	OnInventoryChanged.Broadcast();
+
+	if (UPathfinderRunSubsystem* Run = GetRunSubsystem())
+	{
+		Run->InventorySave = InventoryItems;
+		Run->bHasInventoryData = true;
+	}
+	if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem())
+	{
+		Meta->RequestSave();
+	}
+}
+
+void UInventoryManagerComponent::HandleSaveReset()
+{
+	SetInventory(TArray<FInventoryEntry>());
+}
+
+UPathfinderRunSubsystem* UInventoryManagerComponent::GetRunSubsystem() const
+{
+	const UWorld* World = GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	return GI ? GI->GetSubsystem<UPathfinderRunSubsystem>() : nullptr;
+}
+
+UPathfinderMetaSubsystem* UInventoryManagerComponent::GetMetaSubsystem() const
+{
+	const UWorld* World = GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	return GI ? GI->GetSubsystem<UPathfinderMetaSubsystem>() : nullptr;
+}
+
+// ---------------------------------------------------------------- Items
 
 void UInventoryManagerComponent::AddItem(TSubclassOf<UItemDefinition> ItemDefinition, int32 Count)
 {
@@ -18,7 +96,7 @@ void UInventoryManagerComponent::AddItem(TSubclassOf<UItemDefinition> ItemDefini
 	const int32 MaxStack = GetMaxStackCount(ItemDefinition);
 	int32 Remaining = Count;
 
-	// 1) Top up existing stacks of this item (old FillAllEmptyStacks + FindStackWithEmptySpace).
+	// 1) Top up existing stacks of this item.
 	for (FInventoryEntry& Entry : InventoryItems)
 	{
 		if (Remaining <= 0)
@@ -41,7 +119,8 @@ void UInventoryManagerComponent::AddItem(TSubclassOf<UItemDefinition> ItemDefini
 		Remaining -= Added;
 	}
 
-	OnInventoryChanged.Broadcast();
+	NotifyChanged();
+	OnItemAdded.Broadcast(ItemDefinition, Count);
 }
 
 bool UInventoryManagerComponent::RemoveItem(TSubclassOf<UItemDefinition> ItemDefinition, int32 Amount)
@@ -53,7 +132,7 @@ bool UInventoryManagerComponent::RemoveItem(TSubclassOf<UItemDefinition> ItemDef
 
 	int32 Remaining = Amount;
 
-	// Walk backwards so RemoveAt doesn't skip slots (same as the old Reverse For Each).
+	// Walk backwards so RemoveAt doesn't skip slots.
 	for (int32 Index = InventoryItems.Num() - 1; Index >= 0 && Remaining > 0; --Index)
 	{
 		FInventoryEntry& Entry = InventoryItems[Index];
@@ -72,7 +151,7 @@ bool UInventoryManagerComponent::RemoveItem(TSubclassOf<UItemDefinition> ItemDef
 		}
 	}
 
-	OnInventoryChanged.Broadcast();
+	NotifyChanged();
 	return true;
 }
 
@@ -94,6 +173,17 @@ int32 UInventoryManagerComponent::GetItemCount(TSubclassOf<UItemDefinition> Item
 	return Total;
 }
 
+bool UInventoryManagerComponent::AddMaterial(FName MaterialID, int32 Count)
+{
+	const TSubclassOf<UItemDefinition> Definition = ResolveMaterial(MaterialID);
+	if (!Definition)
+	{
+		return false;
+	}
+	AddItem(Definition, Count);
+	return true;
+}
+
 int32 UInventoryManagerComponent::GetMaterialCount(FName MaterialID) const
 {
 	return GetItemCount(ResolveMaterial(MaterialID));
@@ -107,7 +197,7 @@ bool UInventoryManagerComponent::RemoveMaterial(FName MaterialID, int32 Amount)
 void UInventoryManagerComponent::SetInventory(const TArray<FInventoryEntry>& NewItems)
 {
 	InventoryItems = NewItems;
-	OnInventoryChanged.Broadcast();
+	NotifyChanged();
 }
 
 int32 UInventoryManagerComponent::GetMaxStackCount(TSubclassOf<UItemDefinition> ItemDefinition)

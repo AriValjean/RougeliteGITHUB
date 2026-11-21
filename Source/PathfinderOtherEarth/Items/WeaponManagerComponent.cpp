@@ -7,10 +7,14 @@
 #include "GameFramework/Character.h"
 #include "Core/PathfinderGameMode.h"
 #include "Core/PathfinderRunSubsystem.h"
+#include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "WeaponBase.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWeaponManager, Log, All);
+
+static UPathfinderRunSubsystem* GetRunSubsystem(const UActorComponent* Component);
+static UPathfinderMetaSubsystem* GetMetaSubsystem(const UActorComponent* Component);
 
 UWeaponManagerComponent::UWeaponManagerComponent()
 {
@@ -78,6 +82,7 @@ bool UWeaponManagerComponent::SetClass(ECharacterClass NewClass)
 	if (bChanged)
 	{
 		OnClassChanged.Broadcast(NewClass);
+		PushToRunState();
 	}
 	return bEquipped;
 }
@@ -145,6 +150,7 @@ bool UWeaponManagerComponent::EquipWeapon(FName WeaponRow)
 	LastWeaponPerClass.Add(Data.OwnerClass, WeaponRow);
 
 	OnEquippedWeaponChanged.Broadcast(WeaponRow);
+	PushToRunState(); // last weapon per class changed
 	return true;
 }
 
@@ -220,6 +226,7 @@ void UWeaponManagerComponent::AddOwnedWeapon(FName WeaponRow)
 
 	OwnedWeapons.Add(WeaponRow);
 	OnOwnedWeaponsChanged.Broadcast(WeaponRow);
+	PushToRunState();
 }
 
 bool UWeaponManagerComponent::OwnsWeapon(FName WeaponRow) const
@@ -349,15 +356,56 @@ static UPathfinderRunSubsystem* GetRunSubsystem(const UActorComponent* Component
 	return GameInstance ? GameInstance->GetSubsystem<UPathfinderRunSubsystem>() : nullptr;
 }
 
+static UPathfinderMetaSubsystem* GetMetaSubsystem(const UActorComponent* Component)
+{
+	const UWorld* World = Component ? Component->GetWorld() : nullptr;
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	return GameInstance ? GameInstance->GetSubsystem<UPathfinderMetaSubsystem>() : nullptr;
+}
+
 void UWeaponManagerComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Restore what the previous level stored. First level of a new game: bHasData is false, Class Defaults stay.
+	// Restore what the previous level (or the save file) stored. New game: bHasData is false, Class Defaults stay.
 	if (UPathfinderRunSubsystem* RunState = GetRunSubsystem(this))
 	{
 		LoadSaveData(RunState->WeaponSave);
 	}
+
+	if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem(this))
+	{
+		Meta->OnSaveReset.AddUniqueDynamic(this, &UWeaponManagerComponent::HandleSaveReset);
+	}
+}
+
+void UWeaponManagerComponent::PushToRunState()
+{
+	if (UPathfinderRunSubsystem* RunState = GetRunSubsystem(this))
+	{
+		RunState->WeaponSave = GetSaveData();
+	}
+	if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem(this))
+	{
+		Meta->RequestSave();
+	}
+}
+
+void UWeaponManagerComponent::HandleSaveReset()
+{
+	// Class Defaults of BPC_WeaponManager = a brand-new player.
+	const UWeaponManagerComponent* Defaults = GetClass()->GetDefaultObject<UWeaponManagerComponent>();
+	OwnedWeapons = Defaults->OwnedWeapons;
+	LastWeaponPerClass.Reset();
+	CurrentClass = Defaults->CurrentClass;
+
+	OnOwnedWeaponsChanged.Broadcast(NAME_None);
+	OnClassChanged.Broadcast(CurrentClass);
+
+	// Re-equip the starting class's starter weapon (also pushes the reset state).
+	DestroyEquippedWeapon();
+	EquipWeaponForClass(CurrentClass);
+	PushToRunState();
 }
 
 void UWeaponManagerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -366,6 +414,11 @@ void UWeaponManagerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UPathfinderRunSubsystem* RunState = GetRunSubsystem(this))
 	{
 		RunState->WeaponSave = GetSaveData();
+	}
+
+	if (UPathfinderMetaSubsystem* Meta = GetMetaSubsystem(this))
+	{
+		Meta->OnSaveReset.RemoveDynamic(this, &UWeaponManagerComponent::HandleSaveReset);
 	}
 
 	// The weapon is a separate actor: don't leave it floating in the level if the character goes away.

@@ -7,6 +7,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Meta/MetaTypes.h"
+#include "TimerManager.h"
 #include "PathfinderMetaSubsystem.generated.h"
 
 class UDataTable;
@@ -115,11 +116,30 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Meta|Run")
 	float GetDeathDefianceInvulnerabilityTime() const;
 
+	// ---------- Defeats ----------
+
+	/** Counts an elite/boss kill and saves. Called by the enemy's Enemy Info component. */
+	UFUNCTION(BlueprintCallable, Category = "Meta|Defeats")
+	void RecordEnemyDefeated(FName EnemyId);
+
+	UFUNCTION(BlueprintPure, Category = "Meta|Defeats")
+	int32 GetDefeatCount(FName EnemyId) const { return EnemyDefeats.FindRef(EnemyId); }
+
+	UFUNCTION(BlueprintPure, Category = "Meta|Defeats")
+	bool HasDefeated(FName EnemyId) const { return EnemyDefeats.FindRef(EnemyId) > 0; }
+
 	// ---------- Save ----------
 
 	/** The save slot actually used: the Project Settings name, with "_PIE" added when playing in the editor. */
 	UFUNCTION(BlueprintPure, Category = "Meta|Save")
 	FString GetSaveSlotName() const;
+
+	/**
+	 * Writes the save file about one second from now (several requests in that second = one write).
+	 * Weapon and inventory components call this whenever their permanent data changes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Meta|Save")
+	void RequestSave();
 
 	/** Wipes ALL permanent progress (currencies, upgrade ranks) and deletes the save file. Debug / "new game". */
 	UFUNCTION(BlueprintCallable, Category = "Meta|Save")
@@ -170,9 +190,16 @@ private:
 	TMap<FName, int32> EarnedThisRun;
 
 	UPROPERTY()
+	TMap<FName, int32> EnemyDefeats;
+
+	UPROPERTY()
 	TMap<FName, int32> UpgradeRanks;
 
 	int32 DeathDefianceRemaining = 0;
+
+	class UPathfinderRunSubsystem* GetRunSubsystem() const;
+
+	FTimerHandle DeferredSaveTimer;
 
 	// ---------- Debug console commands (not in shipping builds) ----------
 	void RegisterConsoleCommands();
@@ -180,6 +207,7 @@ private:
 	void Cmd_ResetSave(const TArray<FString>& Args);
 	void Cmd_GiveMemoria(const TArray<FString>& Args);
 	void Cmd_GiveCurrency(const TArray<FString>& Args);
+	void Cmd_GiveMaterial(const TArray<FString>& Args);
 
 	TArray<class IConsoleObject*> ConsoleCommands;
 };

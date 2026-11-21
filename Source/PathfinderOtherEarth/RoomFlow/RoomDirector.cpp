@@ -2,6 +2,7 @@
 
 #include "RoomFlow/RoomDirector.h"
 #include "RoomFlow/RoomFlowSubsystem.h"
+#include "Waves/WaveDirectorComponent.h"
 #include "Combat/HealthComponent.h"
 #include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/GameInstance.h"
@@ -14,6 +15,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogRoomDirector, Log, All);
 ARoomDirector::ARoomDirector()
 {
 	PrimaryActorTick.bCanEverTick = false;
+
+	WaveDirector = CreateDefaultSubobject<UWaveDirectorComponent>(TEXT("WaveDirector"));
 }
 
 void ARoomDirector::BeginPlay()
@@ -49,10 +52,17 @@ void ARoomDirector::GatherPlacedEnemies()
 		UE_LOG(LogRoomDirector, Warning, TEXT("%s: Enemy Class is not set, so placed enemies are not tracked."), *GetName());
 	}
 
-	bGathered = true;
-	UE_LOG(LogRoomDirector, Log, TEXT("%s: tracking %d enemies."), *GetName(), GetAliveEnemyCount());
+	UE_LOG(LogRoomDirector, Log, TEXT("%s: tracking %d placed enemies."), *GetName(), GetAliveEnemyCount());
 
-	// No enemies (Start, Shop, NPC room) -> cleared right away.
+	// Generated Waves (Combat rooms only). While waves are running the room can't clear.
+	if (WaveDirector)
+	{
+		WaveDirector->TryStartEncounter();
+	}
+
+	bGathered = true;
+
+	// No enemies and no waves (Start, Shop, NPC room) -> cleared right away.
 	CheckCleared();
 }
 
@@ -84,7 +94,18 @@ void ARoomDirector::RegisterEnemy(AActor* Enemy)
 
 void ARoomDirector::HandleEnemyDeath(AActor* Killer)
 {
+	// Let the waves react first (may start the next wave), then see if the room is done.
+	if (WaveDirector)
+	{
+		WaveDirector->NotifyEnemyDied();
+	}
+
 	// On Death only tells us the killer, not who died, so just recount who is still alive.
+	CheckCleared();
+}
+
+void ARoomDirector::NotifyWavesFinished()
+{
 	CheckCleared();
 }
 
@@ -113,6 +134,12 @@ void ARoomDirector::CheckCleared()
 	{
 		return !Health.IsValid() || Health->IsDead();
 	});
+
+	// Waves still to come: not cleared yet, even if nobody is alive right now (gap between waves).
+	if (WaveDirector && WaveDirector->IsEncounterActive())
+	{
+		return;
+	}
 
 	if (Enemies.Num() > 0)
 	{

@@ -17,8 +17,8 @@ namespace RoomFlow
 	UDataTable* Stages() { return Settings()->StagesTable.LoadSynchronous(); }
 	UDataTable* Rooms()  { return Settings()->RoomsTable.LoadSynchronous(); }
 
-	/** Combat and NPC rooms are one-per-run; Start, Shop and Boss rooms can repeat. */
-	bool IsNoRepeatType(ERoomType Type) { return Type == ERoomType::Combat || Type == ERoomType::NPC; }
+	/** Combat, NPC and Elite rooms are one-per-run; Start, Shop and Boss rooms can repeat. */
+	bool IsNoRepeatType(ERoomType Type) { return Type == ERoomType::Combat || Type == ERoomType::NPC || Type == ERoomType::Elite; }
 }
 
 // ---------------------------------------------------------------- Run start / end
@@ -88,6 +88,7 @@ void URoomFlowSubsystem::ResetStageState()
 {
 	RoomsCompletedThisStage = 0;
 	OptionalShopsThisStage = 0;
+	ElitesOfferedThisStage = 0;
 	bCurrentRoomCleared = false;
 	PortalOptions.Reset();
 }
@@ -125,6 +126,10 @@ void URoomFlowSubsystem::NotifyRoomEntered()
 	else if (CurrentRoomType == ERoomType::Boss)
 	{
 		Progress = TEXT("Boss room");
+	}
+	else if (CurrentRoomType == ERoomType::Elite)
+	{
+		Progress = FString::Printf(TEXT("Elite room, %d of %d before boss"), RoomsCompletedThisStage + 1, MinRooms);
 	}
 	else
 	{
@@ -198,6 +203,15 @@ void URoomFlowSubsystem::RollPortals()
 		FPortalOption Option;
 		Option.RoomId = RoomId;
 		Option.RoomType = Type;
+
+		// Elite / Boss: carry who's behind the portal so it can show their name and symbol.
+		FRoomRow Row;
+		if (GetRoomData(RoomId, Row))
+		{
+			Option.EncounterName = Row.EncounterName;
+			Option.EncounterIcon = Row.EncounterIcon;
+		}
+
 		PortalOptions.Add(Option);
 		return true;
 	};
@@ -241,9 +255,12 @@ void URoomFlowSubsystem::RollPortals()
 	{
 		Stage = StagesTable->FindRow<FStageRow>(StageId, TEXT("RollPortals"));
 	}
-	const int32 MinRooms   = Stage ? Stage->MinRoomsBeforeBoss : 3;
-	const float ShopChance = Stage ? Stage->ShopChance : 0.35f;
-	const int32 MaxShops   = Stage ? Stage->MaxShopsBeforeBoss : 1;
+	const int32 MinRooms    = Stage ? Stage->MinRoomsBeforeBoss : 3;
+	const float ShopChance  = Stage ? Stage->ShopChance : 0.35f;
+	const int32 MaxShops    = Stage ? Stage->MaxShopsBeforeBoss : 1;
+	const int32 MinElites   = Stage ? Stage->MinElitesPerStage : 1;
+	const int32 MaxElites   = Stage ? FMath::Max(Stage->MaxElitesPerStage, MinElites) : 1;
+	const float EliteChance = Stage ? Stage->EliteChance : 0.35f;
 
 	// Threshold reached: Boss + guaranteed last-chance Shop (not offered again from inside a shop).
 	if (RoomsCompletedThisStage >= MinRooms)
@@ -256,10 +273,27 @@ void URoomFlowSubsystem::RollPortals()
 		return;
 	}
 
-	// Below the threshold: Portal A is always Combat.
+	// Below the threshold: Portal A is always Combat (so an Elite on Portal B can always be skipped).
 	AddOption(ERoomType::Combat, true);
 
-	// Portal B: optional Shop if allowed and the roll passes...
+	// Portal B, 1) Elite. Never twice in a row, and never past Max Elites. Elite rooms don't repeat in a run,
+	// so if every elite of this stage was already used, this simply falls through.
+	const bool bEliteAllowed = ElitesOfferedThisStage < MaxElites
+		&& RoomsCompletedThisStage >= 1
+		&& CurrentRoomType != ERoomType::Elite;
+
+	// Guarantee: this is the last roll before the boss threshold and the stage hasn't offered enough elites yet.
+	const bool bEliteForced = bEliteAllowed
+		&& ElitesOfferedThisStage < MinElites
+		&& RoomsCompletedThisStage >= MinRooms - 1;
+
+	if (bEliteForced && AddOption(ERoomType::Elite, false))
+	{
+		++ElitesOfferedThisStage;
+		return;
+	}
+
+	// Portal B, 2) optional Shop if allowed and the roll passes...
 	const bool bShopAllowed = OptionalShopsThisStage < MaxShops
 		&& RoomsCompletedThisStage >= 1
 		&& CurrentRoomType != ERoomType::Shop;
@@ -270,7 +304,14 @@ void URoomFlowSubsystem::RollPortals()
 		return;
 	}
 
-	// ...otherwise a second, different Combat room. If none are left, Portal B stays hidden.
+	// Portal B, 3) Elite by chance (before the guarantee point).
+	if (bEliteAllowed && Stream.FRand() < EliteChance && AddOption(ERoomType::Elite, false))
+	{
+		++ElitesOfferedThisStage;
+		return;
+	}
+
+	// Portal B, 4) otherwise a second, different Combat room. If none are left, Portal B stays hidden.
 	AddOption(ERoomType::Combat, false);
 }
 
@@ -385,6 +426,18 @@ bool URoomFlowSubsystem::OpenRoom(FName RoomId)
 }
 
 // ---------------------------------------------------------------- Lookups
+
+bool URoomFlowSubsystem::GetRoomData(FName RoomId, FRoomRow& OutRow) const
+{
+	UDataTable* RoomsTable = RoomFlow::Rooms();
+	const FRoomRow* Row = RoomsTable ? RoomsTable->FindRow<FRoomRow>(RoomId, TEXT("GetRoomData"), false) : nullptr;
+	if (!Row)
+	{
+		return false;
+	}
+	OutRow = *Row;
+	return true;
+}
 
 FName URoomFlowSubsystem::GetCurrentStageId() const
 {

@@ -13,6 +13,7 @@
 #include "Engine/Texture2D.h"
 #include "Items/ItemDefinition.h"        // EItemRarity
 #include "Stats/PathfinderStatTypes.h"   // ECharacterStatType, EModifierMode
+#include "Items/PathfinderTypes.h"       // FSkillModifier
 #include "AccessoryTypes.generated.h"
 
 class UAccessoryEffect;
@@ -106,6 +107,10 @@ struct PATHFINDEROTHEREARTH_API FAccessoryData : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Stats")
 	TArray<FStatModifier> StatModifiers;
+
+	/** Changes to class skills (dash distance, cooldowns...). Read by the Skill Component. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Skills")
+	TArray<FSkillModifier> SkillModifiers;
 
 	/** Free values for the Effect blueprint to read (damage, radius, etc.). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accessory|Effect")

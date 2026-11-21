@@ -11,10 +11,11 @@
 //
 // Rules (see the Room Flow Design doc):
 //   Start room            -> one Combat portal
-//   Below the threshold   -> Portal A Combat; Portal B Shop (chance, limited) or a second Combat
+//   Below the threshold   -> Portal A Combat; Portal B Elite (guaranteed Min per stage, else chance),
+//                            Shop (chance, limited) or a second Combat
 //   Threshold reached     -> Portal A Boss; Portal B Shop (guaranteed, unless you're in a shop)
 //   Boss room             -> one portal to the next stage's Start room, or back to camp after the last stage
-//   Combat and NPC rooms never repeat in a run; Start, Shop and Boss rooms may.
+//   Combat, NPC and Elite rooms never repeat in a run; Start, Shop and Boss rooms may.
 
 #pragma once
 
@@ -45,6 +46,14 @@ struct PATHFINDEROTHEREARTH_API FPortalOption
 	/** True on the last boss's exit: using it ends the run and returns to camp. */
 	UPROPERTY(BlueprintReadOnly, Category = "Room Flow")
 	bool bEndsRun = false;
+
+	/** Elite / Boss: who's behind this portal (from the room row). Empty for other rooms. */
+	UPROPERTY(BlueprintReadOnly, Category = "Room Flow")
+	FText EncounterName;
+
+	/** Elite / Boss: the portal symbol (from the room row). */
+	UPROPERTY(BlueprintReadOnly, Category = "Room Flow")
+	TSoftObjectPtr<UTexture2D> EncounterIcon;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPortalsReady, const TArray<FPortalOption>&, Options);
@@ -102,6 +111,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Room Flow")
 	bool IsRunActive() const { return bRunActive; }
 
+	/** Looks up a row in DT_RoomsCPP (e.g. to read a portal's encounter name/icon). */
+	UFUNCTION(BlueprintPure, Category = "Room Flow")
+	bool GetRoomData(FName RoomId, FRoomRow& OutRow) const;
+
 	UFUNCTION(BlueprintPure, Category = "Room Flow")
 	bool IsCurrentRoomCleared() const { return bCurrentRoomCleared; }
 
@@ -147,6 +160,9 @@ private:
 	bool bRunActive = false;
 	bool bCurrentRoomCleared = false;
 	int32 OptionalShopsThisStage = 0;
+
+	/** Elite portals offered this stage (taken or skipped). Compared against Min/Max Elites Per Stage. */
+	int32 ElitesOfferedThisStage = 0;
 
 	/** Combat and NPC rooms already used this run. */
 	TSet<FName> VisitedRooms;

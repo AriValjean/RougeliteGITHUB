@@ -9,7 +9,9 @@
 //   - LastWeaponPerClass  : remembered so changing class re-equips that class's last weapon
 //
 // Persistence: the character is recreated on every level load, so this component copies its state into
-// UPathfinderRunSubsystem in EndPlay and copies it back in BeginPlay. Automatic: nothing to call before travel.
+// UPathfinderRunSubsystem whenever it changes (and in EndPlay), and copies it back in BeginPlay.
+// UPathfinderMetaSubsystem writes that data to the save file, so weapons and class survive closing the game.
+// Automatic: nothing to call before travel or quitting.
 
 #pragma once
 
@@ -215,6 +217,13 @@ private:
 
 	/** Destroys the current weapon actor (after telling it On Unequipped). */
 	void DestroyEquippedWeapon();
+
+	/** Copies state into the Run subsystem and asks the Meta subsystem to write the save file. */
+	void PushToRunState();
+
+	/** Meta.ResetSave / new game: back to Class Defaults (starter weapons, starting class). */
+	UFUNCTION()
+	void HandleSaveReset();
 
 	UPROPERTY(Transient)
 	TObjectPtr<AWeaponBase> EquippedWeapon;

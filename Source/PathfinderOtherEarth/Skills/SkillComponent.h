@@ -24,6 +24,7 @@
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
 #include "NativeGameplayTags.h"
+#include "Engine/TimerHandle.h"
 #include "Items/PathfinderTypes.h"
 #include "SkillComponent.generated.h"
 
@@ -32,9 +33,12 @@ class UDataTable;
 class UWeaponManagerComponent;
 class UStatsManagerComponent;
 class UAccessoryManagerComponent;
+class UHealthComponent;
 
 PATHFINDEROTHEREARTH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_State_Dashing);
 PATHFINDEROTHEREARTH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_State_Invincible);
+/** While the player has this tag (granted by an accessory), abilities can crit. Without it they never do. */
+PATHFINDEROTHEREARTH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Skill_CanCrit);
 
 /** Runtime data for one filled slot. */
 USTRUCT()
@@ -76,9 +80,31 @@ public:
 	// Using skills (input calls this)
 	// ------------------------------------------------------------------
 
-	/** Checks cooldown and the skill's own rules, starts the cooldown, then runs the skill. */
+	/** Checks cooldown and the skill's own rules, starts the cooldown, then runs the skill. Cancels any other skill's aiming. */
 	UFUNCTION(BlueprintCallable, Category = "Skills")
 	bool TryActivateSkill(ESkillSlot Slot);
+
+	/**
+	 * Key PRESSED. Hold To Aim skills start aiming (indicator right away, or after the skill's Tap Threshold);
+	 * other skills just activate. Wire the key's Started here (and Completed to Release Skill Input).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Skills|Aim")
+	void BeginSkillInput(ESkillSlot Slot);
+
+	/**
+	 * Key RELEASED. Casts the aimed skill at the indicator, or quick casts it if released before the
+	 * skill's Tap Threshold (a tap). Does nothing for normal skills.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Skills|Aim")
+	void ReleaseSkillInput(ESkillSlot Slot);
+
+	/** Stops aiming without casting or spending the cooldown (right click, menus...). Safe to call anytime. */
+	UFUNCTION(BlueprintCallable, Category = "Skills|Aim")
+	void CancelTargeting();
+
+	/** True while a Hold To Aim key is held (including the short tap window before the indicator shows). */
+	UFUNCTION(BlueprintPure, Category = "Skills|Aim")
+	bool IsTargeting() const { return bIsTargetingSkill; }
 
 	// ------------------------------------------------------------------
 	// Class / subclass
@@ -106,6 +132,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Skills")
 	bool HasSkill(ESkillSlot Slot) const;
 
+	/** The live skill object in this slot (None if empty). Lets skills talk to each other (e.g. Reckoning reads the mark). */
+	UFUNCTION(BlueprintPure, Category = "Skills")
+	USkillBase* GetSkill(ESkillSlot Slot) const;
+
 	/** Name, icon, base cooldown ... of the skill in this slot. Returns false if the slot is empty. */
 	UFUNCTION(BlueprintPure, Category = "Skills")
 	bool GetSkillDefinition(ESkillSlot Slot, FSkillDefinition& OutDefinition) const;
@@ -120,6 +150,13 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Skills")
 	bool IsOnCooldown(ESkillSlot Slot) const { return GetCooldownRemaining(Slot) > 0.f; }
+
+	/** Internal (Skill Base): a skill finished. Starts the cooldown of Cooldown Starts On End skills. */
+	void NotifySkillEnded(USkillBase* Skill);
+
+	/** Makes the skill ready right away (a skill that fizzled refunds itself; later: reset-cooldown accessories). */
+	UFUNCTION(BlueprintCallable, Category = "Skills")
+	void ResetCooldown(ESkillSlot Slot);
 
 	UFUNCTION(BlueprintPure, Category = "Skills")
 	bool IsAnySkillActive() const;
@@ -217,12 +254,28 @@ private:
 	UFUNCTION()
 	void HandleAccessoryChanged(FName AccessoryID, int32 NewCount);
 
+	UFUNCTION()
+	void HandleOwnerDeath(AActor* Killer);
+
+	/** Cooldown for this slot right now: skill modifiers, then Cooldown Reduction (never on Dash). */
+	float ComputeCooldown(ESkillSlot Slot, const FEquippedSkill& Equipped) const;
+
+	/** Sets "ready at" and tells the skill bar. */
+	void StartCooldown(ESkillSlot Slot);
+
+	/** Tap window passed with the key still held: show the indicator. */
+	void StartHeldTargeting();
+
 	/** Runs one frame after BeginPlay, once the other managers have restored their saved state. */
 	void InitializeAfterLoad();
 
 	void EndAllSkills();
+	void RemoveAllSkills();
 	void BuildSlot(ESkillSlot Slot, FName SkillRow);
 	const FClassKit* FindKitRow(FName RowName) const;
+
+	/** Row exists in DT_SkillsCPP and has a non-abstract Skill Class. */
+	bool IsUsableSkillRow(FName SkillRow) const;
 
 	UPROPERTY()
 	TMap<ESkillSlot, FEquippedSkill> EquippedSkills;
@@ -236,7 +289,12 @@ private:
 	TMap<int32, FSkillModTotals> AccessoryModifiers;
 	TMap<int32, FSkillModTotals> ExtraModifiers;
 
+	bool bIsTargetingSkill = false;
+	ESkillSlot TargetingSlot = ESkillSlot::Dash;
+	FTimerHandle TapWindowTimer;
+
 	TWeakObjectPtr<UWeaponManagerComponent> WeaponManager;
 	TWeakObjectPtr<UStatsManagerComponent> StatsManager;
 	TWeakObjectPtr<UAccessoryManagerComponent> AccessoryManager;
+	TWeakObjectPtr<UHealthComponent> OwnerHealth;
 };

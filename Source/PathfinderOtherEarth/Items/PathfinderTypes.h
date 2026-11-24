@@ -33,7 +33,7 @@ enum class ECharacterClass : uint8
 	Rogue     UMETA(DisplayName = "Rogue"),
 	Ranger    UMETA(DisplayName = "Ranger"),
 	Wizard    UMETA(DisplayName = "Wizard"),
-	Swordsman UMETA(DisplayName = "Swordsman")
+	Warrior   UMETA(DisplayName = "Warrior")   // renamed from Swordsman (CoreRedirect in DefaultEngine.ini keeps old data)
 };
 
 /** How an attack slot delivers its hit. */
@@ -295,11 +295,71 @@ struct FSkillDefinition : public FTableRowBase
 	/** Optional. Played by Play Skill Montage. Placeholder for now. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
 	TSoftObjectPtr<UAnimMontage> Montage;
+
+	// --- Tuning (each skill uses the ones it needs; the rest are ignored) ---
+
+	/** Base damage per hit. Damage skill modifiers apply on top. 0 = deals no damage. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "0.0"))
+	float Damage = 0.f;
+
+	/**
+	 * How much the Attack Damage stat affects Damage. 1 = full scaling, 0.25 = a quarter, 0 = none.
+	 * Damage x (1 + (Attack Damage - 1) x this). Attack Damage 1.4 with 0.25 -> x1.1.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "0.0"))
+	float AttackDamageScaling = 1.f;
+
+	/**
+	 * Is this skill ALLOWED to crit? Abilities never crit by default: even when ticked, a skill only
+	 * crits while the player has the Skill.CanCrit tag (granted by an accessory). Untick for skills
+	 * that should never crit, even with that accessory (e.g. Marked Dagger's small hit).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning")
+	bool bCanCrit = true;
+
+	/** Skill-specific value. Marked Dagger: 0.2 = marked enemy takes +20% damage. Reckoning: 0.5 = detonates 50% of stored damage. Volley: 0.2 = 20% slow. Rain of Arrows: 0.15 = 15% slow inside. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning")
+	float Magnitude = 0.f;
+
+	/** Skill-specific seconds (e.g. how long a mark lasts). Duration skill modifiers apply. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "0.0", Units = "s"))
+	float EffectDuration = 0.f;
+
+	/** Max distance for aiming / projectiles. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "0.0", Units = "cm"))
+	float Range = 2000.f;
+
+	/** Projectile speed, for skills that throw or fire something. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "0.0"))
+	float ProjectileSpeed = 3000.f;
+
+	/** Area size for skills with an area / splash (e.g. Reckoning splash). Radius skill modifiers apply. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "0.0", Units = "cm"))
+	float Radius = 0.f;
+
+	/** Second skill-specific value. Reckoning: 0.25 = splash deals 25% of the detonation. Rain of Arrows: 0.5 = seconds between damage ticks. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning")
+	float SecondaryMagnitude = 0.f;
+
+	/** How many projectiles one use fires (e.g. Volley: 5 arrows). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "1"))
+	int32 ProjectileCount = 1;
+
+	/** Total width of a projectile fan, centred on the crosshair (e.g. Volley: 30). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Tuning", meta = (ClampMin = "0.0", ClampMax = "180.0", Units = "deg"))
+	float SpreadAngle = 0.f;
+
+	/**
+	 * Hold the key to show a ground indicator at the crosshair (clamped to Range); release to cast.
+	 * Right click / dash / death cancel without spending the cooldown. A quick tap still casts.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill|Aim")
+	bool bHoldToAim = false;
 };
 
 /**
  * One row in DT_ClassKitsCPP. Row Name must match the enum name:
- *   base classes: Rogue, Ranger, Wizard, Swordsman
+ *   base classes: Rogue, Ranger, Wizard, Warrior
  *   subclasses:   Daredevil, Assassin, Crossbowman, Deadeye, BattleMage, Monk, Paladin, DarkKnight
  * On a subclass row, leave a slot as None to keep the base class's skill for that slot.
  */

@@ -6,11 +6,13 @@
 #include "Items/WeaponManagerComponent.h"
 #include "Stats/StatsManagerComponent.h"
 #include "Accessory/AccessoryManagerComponent.h"
+#include "Combat/HealthComponent.h"
 #include "Engine/DataTable.h"
 #include "TimerManager.h"
 
 UE_DEFINE_GAMEPLAY_TAG_COMMENT(TAG_State_Dashing, "State.Dashing", "Character is in the middle of a dash.");
 UE_DEFINE_GAMEPLAY_TAG_COMMENT(TAG_State_Invincible, "State.Invincible", "Character ignores incoming damage.");
+UE_DEFINE_GAMEPLAY_TAG_COMMENT(TAG_Skill_CanCrit, "Skill.CanCrit", "Abilities can crit (granted by an accessory). Without it, abilities never crit.");
 
 namespace
 {
@@ -36,6 +38,11 @@ void USkillComponent::BeginPlay()
 		WeaponManager = Owner->FindComponentByClass<UWeaponManagerComponent>();
 		StatsManager = Owner->FindComponentByClass<UStatsManagerComponent>();
 		AccessoryManager = Owner->FindComponentByClass<UAccessoryManagerComponent>();
+		OwnerHealth = Owner->FindComponentByClass<UHealthComponent>();
+	}
+	if (OwnerHealth.IsValid())
+	{
+		OwnerHealth->OnDeath.AddDynamic(this, &USkillComponent::HandleOwnerDeath);
 	}
 	if (WeaponManager.IsValid())
 	{
@@ -61,7 +68,11 @@ void USkillComponent::InitializeAfterLoad()
 
 void USkillComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	EndAllSkills();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(TapWindowTimer);
+	}
+	RemoveAllSkills();
 	if (WeaponManager.IsValid())
 	{
 		WeaponManager->OnClassChanged.RemoveDynamic(this, &USkillComponent::HandleClassChanged);
@@ -69,6 +80,10 @@ void USkillComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (AccessoryManager.IsValid())
 	{
 		AccessoryManager->OnAccessoryChanged.RemoveDynamic(this, &USkillComponent::HandleAccessoryChanged);
+	}
+	if (OwnerHealth.IsValid())
+	{
+		OwnerHealth->OnDeath.RemoveDynamic(this, &USkillComponent::HandleOwnerDeath);
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -79,6 +94,12 @@ void USkillComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool USkillComponent::TryActivateSkill(ESkillSlot Slot)
 {
+	// Using a different skill (e.g. dash) while aiming cancels the aim.
+	if (bIsTargetingSkill && Slot != TargetingSlot)
+	{
+		CancelTargeting();
+	}
+
 	FEquippedSkill* Equipped = EquippedSkills.Find(Slot);
 	UWorld* World = GetWorld();
 	if (!Equipped || !Equipped->Skill || !World)
@@ -90,29 +111,178 @@ bool USkillComponent::TryActivateSkill(ESkillSlot Slot)
 		return false;
 	}
 
+	// Keep a local pointer: the skill may change the kit while running.
+	USkillBase* Skill = Equipped->Skill;
+
+	// Normal skills start the cooldown on cast; lasting ones (summons) when they end.
+	if (!Skill->StartsCooldownOnEnd())
+	{
+		StartCooldown(Slot);
+	}
+
+	Skill->MarkActive();
+	OnSkillActivated.Broadcast(Slot);
+
+	Skill->ActivateSkill();
+	return true;
+}
+
+float USkillComponent::ComputeCooldown(ESkillSlot Slot, const FEquippedSkill& Equipped) const
+{
 	// 1) accessory / extra skill modifiers, 2) Cooldown Reduction stat (never on Dash).
-	float Cooldown = GetModifiedSkillValue(Slot, ESkillStat::Cooldown, Equipped->Definition.Cooldown);
+	float Cooldown = GetModifiedSkillValue(Slot, ESkillStat::Cooldown, Equipped.Definition.Cooldown);
 	if (Slot != ESkillSlot::Dash)
 	{
 		Cooldown *= 1.f - FMath::Clamp(GetCooldownReductionPercent(), 0.f, 0.9f);
 	}
-	Cooldown = FMath::Max(0.f, Cooldown);
+	return FMath::Max(0.f, Cooldown);
+}
 
+void USkillComponent::StartCooldown(ESkillSlot Slot)
+{
+	FEquippedSkill* Equipped = EquippedSkills.Find(Slot);
+	const UWorld* World = GetWorld();
+	if (!Equipped || !World)
+	{
+		return;
+	}
+
+	const float Cooldown = ComputeCooldown(Slot, *Equipped);
 	Equipped->LastCooldownDuration = Cooldown;
 	Equipped->ReadyAtTime = World->GetTimeSeconds() + Cooldown;
-
-	// Keep a local pointer: the skill may change the kit while running.
-	USkillBase* Skill = Equipped->Skill;
-	Skill->MarkActive();
-
-	OnSkillActivated.Broadcast(Slot);
 	if (Cooldown > 0.f)
 	{
 		OnCooldownStarted.Broadcast(Slot, Cooldown);
 	}
+}
 
-	Skill->ActivateSkill();
-	return true;
+void USkillComponent::NotifySkillEnded(USkillBase* Skill)
+{
+	if (!Skill || !Skill->StartsCooldownOnEnd())
+	{
+		return;
+	}
+	for (const TPair<ESkillSlot, FEquippedSkill>& Pair : EquippedSkills)
+	{
+		if (Pair.Value.Skill == Skill)
+		{
+			StartCooldown(Pair.Key);
+			return;
+		}
+	}
+}
+
+void USkillComponent::BeginSkillInput(ESkillSlot Slot)
+{
+	FEquippedSkill* Equipped = EquippedSkills.Find(Slot);
+	UWorld* World = GetWorld();
+	if (!Equipped || !Equipped->Skill || !World)
+	{
+		return;
+	}
+
+	// Normal skills activate on press.
+	if (!Equipped->Definition.bHoldToAim)
+	{
+		TryActivateSkill(Slot);
+		return;
+	}
+
+	// Hold To Aim: only start aiming if it could actually be cast.
+	if (IsOnCooldown(Slot) || Equipped->Skill->IsActive() || !Equipped->Skill->CanActivate())
+	{
+		return;
+	}
+	if (bIsTargetingSkill)
+	{
+		CancelTargeting();
+	}
+
+	bIsTargetingSkill = true;
+	TargetingSlot = Slot;
+
+	// Tap-or-hold skills wait out the tap window before showing the indicator, so taps never flash it.
+	const float TapThreshold = Equipped->Skill->GetTapThreshold();
+	if (TapThreshold > 0.f)
+	{
+		World->GetTimerManager().SetTimer(TapWindowTimer, this, &USkillComponent::StartHeldTargeting, TapThreshold, false);
+	}
+	else
+	{
+		Equipped->Skill->BeginTargeting();
+	}
+}
+
+void USkillComponent::StartHeldTargeting()
+{
+	if (!bIsTargetingSkill)
+	{
+		return;
+	}
+	if (USkillBase* Skill = GetSkill(TargetingSlot))
+	{
+		Skill->BeginTargeting();
+	}
+}
+
+void USkillComponent::ReleaseSkillInput(ESkillSlot Slot)
+{
+	if (!bIsTargetingSkill || Slot != TargetingSlot)
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(TapWindowTimer);
+	}
+	bIsTargetingSkill = false;
+
+	USkillBase* Skill = GetSkill(Slot);
+	if (!Skill)
+	{
+		return;
+	}
+
+	// Released inside the tap window: quick cast (the skill gets no aimed location).
+	if (!Skill->IsTargeting())
+	{
+		TryActivateSkill(Slot);
+		return;
+	}
+
+	Skill->EndTargeting(/*bKeepAimedLocation*/ true);
+	if (!TryActivateSkill(Slot))
+	{
+		// Couldn't cast after all: throw the aimed spot away.
+		FVector Unused;
+		Skill->ConsumeAimedLocation(Unused);
+	}
+}
+
+void USkillComponent::CancelTargeting()
+{
+	if (!bIsTargetingSkill)
+	{
+		return;
+	}
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(TapWindowTimer);
+	}
+	bIsTargetingSkill = false;
+	if (USkillBase* Skill = GetSkill(TargetingSlot))
+	{
+		Skill->EndTargeting(/*bKeepAimedLocation*/ false);
+	}
+}
+
+void USkillComponent::HandleOwnerDeath(AActor* Killer)
+{
+	CancelTargeting();
+
+	// Ends lasting skills too (e.g. the Arcane Familiar disappears).
+	EndAllSkills();
 }
 
 float USkillComponent::GetCooldownReductionPercent() const
@@ -150,16 +320,16 @@ void USkillComponent::HandleClassChanged(ECharacterClass NewClass)
 
 void USkillComponent::RebuildKit()
 {
-	EndAllSkills();
-	EquippedSkills.Empty();
+	RemoveAllSkills();
 
 	const FClassKit* BaseKit = FindKitRow(EnumToRowName(GetCurrentClass()));
 	const FClassKit* SubKit = (CurrentSubclass != ESubclass::None) ? FindKitRow(EnumToRowName(CurrentSubclass)) : nullptr;
 
-	// Subclass row wins for any slot it fills in; empty slots keep the base class's skill.
-	auto Pick = [BaseKit, SubKit](FName FClassKit::* Member) -> FName
+	// Subclass row wins for any slot where it names a USABLE skill (row exists in DT_SkillsCPP and has a
+	// Skill Class). Empty or not-built-yet subclass skills fall back to the base class's skill.
+	auto Pick = [this, BaseKit, SubKit](FName FClassKit::* Member) -> FName
 	{
-		if (SubKit && !(SubKit->*Member).IsNone())
+		if (SubKit && IsUsableSkillRow(SubKit->*Member))
 		{
 			return SubKit->*Member;
 		}
@@ -192,17 +362,27 @@ void USkillComponent::BuildSlot(ESkillSlot Slot, FName SkillRow)
 	NewSkill.Definition = *Definition;
 
 	UClass* SkillClass = Definition->SkillClass.Get();
-	if (SkillClass && !SkillClass->HasAnyClassFlags(CLASS_Abstract))
+	if (!SkillClass || SkillClass->HasAnyClassFlags(CLASS_Abstract))
 	{
-		NewSkill.Skill = NewObject<USkillBase>(this, SkillClass);
-		NewSkill.Skill->InitSkill(this, SkillRow, Slot, *Definition);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("SkillComponent: skill '%s' has no usable Skill Class (empty or abstract)"), *SkillRow.ToString());
+		// Placeholder row (not built yet): leave the slot empty so the skill bar hides it.
+		UE_LOG(LogTemp, Log, TEXT("SkillComponent: skill '%s' has no Skill Class yet, slot left empty."), *SkillRow.ToString());
+		return;
 	}
 
+	NewSkill.Skill = NewObject<USkillBase>(this, SkillClass);
+	NewSkill.Skill->InitSkill(this, SkillRow, Slot, *Definition);
 	EquippedSkills.Add(Slot, NewSkill);
+}
+
+bool USkillComponent::IsUsableSkillRow(FName SkillRow) const
+{
+	if (SkillRow.IsNone() || !SkillTable)
+	{
+		return false;
+	}
+	const FSkillDefinition* Definition = SkillTable->FindRow<FSkillDefinition>(SkillRow, TEXT("SkillComponent::IsUsableSkillRow"), false);
+	const UClass* SkillClass = Definition ? Definition->SkillClass.Get() : nullptr;
+	return SkillClass && !SkillClass->HasAnyClassFlags(CLASS_Abstract);
 }
 
 const FClassKit* USkillComponent::FindKitRow(FName RowName) const
@@ -212,6 +392,21 @@ const FClassKit* USkillComponent::FindKitRow(FName RowName) const
 		return nullptr;
 	}
 	return ClassKitTable->FindRow<FClassKit>(RowName, TEXT("SkillComponent::FindKitRow"), /*bWarnIfRowMissing*/ false);
+}
+
+void USkillComponent::RemoveAllSkills()
+{
+	CancelTargeting();
+
+	// Ends running skills and lets them clean up lasting effects (e.g. a mark on an enemy).
+	for (TPair<ESkillSlot, FEquippedSkill>& Pair : EquippedSkills)
+	{
+		if (Pair.Value.Skill)
+		{
+			Pair.Value.Skill->NotifyRemoved();
+		}
+	}
+	EquippedSkills.Empty();
 }
 
 void USkillComponent::EndAllSkills()
@@ -235,6 +430,12 @@ bool USkillComponent::HasSkill(ESkillSlot Slot) const
 	return Equipped && Equipped->Skill;
 }
 
+USkillBase* USkillComponent::GetSkill(ESkillSlot Slot) const
+{
+	const FEquippedSkill* Equipped = EquippedSkills.Find(Slot);
+	return Equipped ? Equipped->Skill.Get() : nullptr;
+}
+
 bool USkillComponent::GetSkillDefinition(ESkillSlot Slot, FSkillDefinition& OutDefinition) const
 {
 	if (const FEquippedSkill* Equipped = EquippedSkills.Find(Slot))
@@ -254,6 +455,15 @@ float USkillComponent::GetCooldownRemaining(ESkillSlot Slot) const
 		return 0.f;
 	}
 	return FMath::Max(0.f, static_cast<float>(Equipped->ReadyAtTime - World->GetTimeSeconds()));
+}
+
+void USkillComponent::ResetCooldown(ESkillSlot Slot)
+{
+	// Get Cooldown Remaining returns 0 from now on.
+	if (FEquippedSkill* Equipped = EquippedSkills.Find(Slot))
+	{
+		Equipped->ReadyAtTime = 0.0;
+	}
 }
 
 float USkillComponent::GetCooldownDuration(ESkillSlot Slot) const

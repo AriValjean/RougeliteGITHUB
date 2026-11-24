@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Stats/StatsManagerComponent.h"
 #include "Skills/SkillComponent.h"
+#include "Combat/DamageDebug.h"
 #include "Meta/PathfinderMetaSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -169,9 +170,22 @@ bool UHealthComponent::TakeDamage(const FDamageInfo& DamageInfo, float& FinalDam
 		return false;
 	}
 
+	// Marks / vulnerability on this target (e.g. Marked Dagger +20%).
+	const float TakenMultiplier = GetDamageTakenMultiplier();
+
 	// RoR2-style diminishing returns: 100 Defense = half damage. Negative Defense is treated as 0.
 	const float SafeDefense = FMath::Max(Defense, 0.f);
-	FinalDamage = DamageInfo.Amount * (100.f / (SafeDefense + 100.f));
+	const float DefenseFactor = 100.f / (SafeDefense + 100.f);
+	FinalDamage = DamageInfo.Amount * TakenMultiplier * DefenseFactor;
+
+	if (PathfinderDamageDebug::IsEnabled())
+	{
+		PathfinderDamageDebug::Print(FString::Printf(
+			TEXT("[Hit] %s <- %s: incoming %.1f%s x taken %.2f x defense %.2f (Def %.0f) = %.1f"),
+			*GetNameSafe(GetOwner()), *GetNameSafe(DamageInfo.Instigator), DamageInfo.Amount,
+			DamageInfo.bIsCritical ? TEXT(" (CRIT)") : TEXT(""), TakenMultiplier, DefenseFactor, SafeDefense, FinalDamage),
+			FColor::Orange);
+	}
 
 	// Never below 0, so health bars and run-state saves don't see negative health.
 	CurrentHealth = FMath::Max(CurrentHealth - FinalDamage, 0.f);
@@ -190,10 +204,27 @@ bool UHealthComponent::TakeDamage(const FDamageInfo& DamageInfo, float& FinalDam
 	if (CurrentHealth <= 0.f)
 	{
 		bIsDead = true;
+		DamageTakenModifiers.Reset(); // marks end on death
+		OnDamageTakenModifiersChanged.Broadcast();
 		OnDeath.Broadcast(DamageInfo.Instigator);
 	}
 
 	return true;
+}
+
+void UHealthComponent::Kill(AActor* Killer)
+{
+	if (bIsDead)
+	{
+		return;
+	}
+
+	CurrentHealth = 0.f;
+	bIsDead = true;
+	DamageTakenModifiers.Reset();
+	OnDamageTakenModifiersChanged.Broadcast();
+	BroadcastHealthChanged();
+	OnDeath.Broadcast(Killer);
 }
 
 bool UHealthComponent::TryDeathDefiance()
@@ -258,4 +289,41 @@ float UHealthComponent::GetHealthPercent() const
 void UHealthComponent::BroadcastHealthChanged()
 {
 	OnHealthChanged.Broadcast(this, CurrentHealth, MaxHealth);
+}
+
+// ----------------------------------------------------------------------
+// Damage taken modifiers
+// ----------------------------------------------------------------------
+
+void UHealthComponent::SetDamageTakenModifier(FName Source, float Bonus)
+{
+	if (Source.IsNone() || bIsDead)
+	{
+		return;
+	}
+	DamageTakenModifiers.Add(Source, Bonus);
+	OnDamageTakenModifiersChanged.Broadcast();
+}
+
+void UHealthComponent::RemoveDamageTakenModifier(FName Source)
+{
+	if (DamageTakenModifiers.Remove(Source) > 0)
+	{
+		OnDamageTakenModifiersChanged.Broadcast();
+	}
+}
+
+bool UHealthComponent::HasDamageTakenModifier(FName Source) const
+{
+	return DamageTakenModifiers.Contains(Source);
+}
+
+float UHealthComponent::GetDamageTakenMultiplier() const
+{
+	float Multiplier = 1.f;
+	for (const TPair<FName, float>& Pair : DamageTakenModifiers)
+	{
+		Multiplier += Pair.Value;
+	}
+	return FMath::Max(0.f, Multiplier);
 }

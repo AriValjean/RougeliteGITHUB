@@ -26,6 +26,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnHealthChangedSignature, UHealt
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnDamagedSignature, const FDamageInfo&, DamageInfo, float, FinalDamage);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDeathSignature, AActor*, Killer);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDeathDefiedSignature, int32, ChargesRemaining);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnDamageTakenModifiersChanged);
 
 UCLASS(Blueprintable, ClassGroup = (Pathfinder), meta = (BlueprintSpawnableComponent))
 class PATHFINDEROTHEREARTH_API UHealthComponent : public UActorComponent
@@ -48,7 +49,7 @@ public:
 	// ------------------------------------------------------------------
 
 	/**
-	 * Applies one hit. Final Damage = Amount x 100 / (Defense + 100).
+	 * Applies one hit. Final Damage = Amount x Damage Taken Multiplier x 100 / (Defense + 100).
 	 * Does nothing (returns false) if already dead or invincible.
 	 * Fires On Damaged, On Health Changed, and On Death when health reaches 0
 	 * (or On Death Defied instead, if a Death Defiance charge was used).
@@ -71,9 +72,41 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	void RestoreCurrentHealth(float NewCurrentHealth);
 
+	/**
+	 * Kills instantly: ignores Defense, invincibility and Death Defiance. Fires On Death (Killer may be None)
+	 * like a normal death. For debug commands and kill zones.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void Kill(AActor* Killer);
+
 	/** Invincible actors ignore Take Damage (dodge i-frames, cutscenes, debug). */
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	void SetInvincible(bool bNewInvincible);
+
+	// ------------------------------------------------------------------
+	// Damage taken modifiers (marks, vulnerability...)
+	// ------------------------------------------------------------------
+
+	/**
+	 * Adds or replaces a "takes extra damage" effect from one source (e.g. "MarkedDagger").
+	 * Bonus is a fraction: 0.2 = +20% damage taken. Cleared automatically on death.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Health|Modifiers")
+	void SetDamageTakenModifier(FName Source, float Bonus);
+
+	UFUNCTION(BlueprintCallable, Category = "Health|Modifiers")
+	void RemoveDamageTakenModifier(FName Source);
+
+	UFUNCTION(BlueprintPure, Category = "Health|Modifiers")
+	bool HasDamageTakenModifier(FName Source) const;
+
+	/** 1 + every active bonus (never below 0). Take Damage multiplies incoming damage by this. */
+	UFUNCTION(BlueprintPure, Category = "Health|Modifiers")
+	float GetDamageTakenMultiplier() const;
+
+	/** A mark / vulnerability was added or removed. Overhead icons can bind this. */
+	UPROPERTY(BlueprintAssignable, Category = "Health|Events")
+	FOnDamageTakenModifiersChanged OnDamageTakenModifiersChanged;
 
 	// ------------------------------------------------------------------
 	// Getters
@@ -164,6 +197,10 @@ private:
 	/** False until the stats component has loaded a real base Max Health. Before that, stat changes are ignored. */
 	UPROPERTY(VisibleInstanceOnly, Category = "Health")
 	bool bHealthInitialized = false;
+
+	/** Source -> bonus fraction (e.g. MarkedDagger -> 0.2). */
+	UPROPERTY(VisibleInstanceOnly, Category = "Health")
+	TMap<FName, float> DamageTakenModifiers;
 
 	/** A Restore Current Health that arrived before the stats loaded. Applied on initialization. -1 = none. */
 	float PendingRestoredHealth = -1.f;
